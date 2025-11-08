@@ -11,6 +11,8 @@ from typing import Optional
 from config.settings import Settings
 from preprocessor import ImagePreprocessor
 from ocr_engine import OCREngine
+from error_corrector import ErrorCorrector
+from field_validator import FieldValidator
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
@@ -30,9 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["preprocess", "ocr", "pipeline"],
+        choices=["preprocess", "ocr", "correction", "pipeline"],
         default="pipeline",
-        help="Processing mode: preprocess only, OCR only, or full pipeline (default: pipeline).",
+        help="Processing mode: preprocess only, OCR only, correction only, or full pipeline (default: pipeline).",
     )
     return parser
 
@@ -93,6 +95,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return _run_preprocessing(input_path, args.output, settings, logger)
         elif args.mode == "ocr":
             return _run_ocr(input_path, args.output, settings, logger)
+        elif args.mode == "correction":
+            return _run_correction(input_path, args.output, settings, logger)
         elif args.mode == "pipeline":
             return _run_pipeline(input_path, args.output, settings, logger)
         else:
@@ -149,8 +153,67 @@ def _run_ocr(input_path: Path, output_path: Optional[str], settings: Settings, l
     return 0
 
 
+def _run_correction(input_path: Path, output_path: Optional[str], settings: Settings, logger: logging.Logger) -> int:
+    """Run error correction and validation on existing OCR results."""
+    logger.info("Starting error correction and validation...")
+    
+    # Step 1: Error correction
+    logger.info("Step 1: Applying error corrections...")
+    error_corrector = ErrorCorrector(settings=settings, logger=logger)
+    correction_result = error_corrector.process(input_path=input_path)
+    
+    logger.info(
+        "Error correction completed in %.3f seconds. Output: %s",
+        correction_result.duration_seconds,
+        correction_result.output_path,
+    )
+    logger.info(
+        "Applied %d corrections to %d texts (%.1f%%)",
+        correction_result.corrections_applied,
+        correction_result.total_texts,
+        correction_result.correction_rate * 100
+    )
+    
+    # Step 2: Field validation
+    logger.info("Step 2: Validating fields...")
+    field_validator = FieldValidator(settings=settings, logger=logger)
+    
+    # Use custom output path if provided, otherwise validate in place
+    validation_output_path = Path(output_path) if output_path else None
+    validation_result = field_validator.process(
+        input_path=correction_result.output_path,
+        output_path=validation_output_path
+    )
+    
+    logger.info(
+        "Field validation completed in %.3f seconds. Output: %s",
+        validation_result.duration_seconds,
+        validation_result.output_path,
+    )
+    
+    # Final summary
+    total_time = correction_result.duration_seconds + validation_result.duration_seconds
+    logger.info("=== Correction & Validation Summary ===")
+    logger.info("Total processing time: %.3f seconds", total_time)
+    logger.info("Corrections applied: %d", correction_result.corrections_applied)
+    logger.info("Fields validated: %d/%d (%.1f%%)",
+                validation_result.validated_fields,
+                validation_result.total_fields,
+                validation_result.validation_rate * 100)
+    
+    if validation_result.failed_validations > 0:
+        logger.warning(
+            "%d validation failures detected - review output file",
+            validation_result.failed_validations,
+        )
+    
+    logger.info("Final output: %s", validation_result.output_path)
+    
+    return 0
+
+
 def _run_pipeline(input_path: Path, output_path: Optional[str], settings: Settings, logger: logging.Logger) -> int:
-    """Run full pipeline: preprocessing followed by OCR."""
+    """Run full pipeline: preprocessing, OCR, error correction, and validation."""
     logger.info("Starting full processing pipeline...")
     
     # Step 1: Preprocessing
@@ -167,10 +230,7 @@ def _run_pipeline(input_path: Path, output_path: Optional[str], settings: Settin
     # Step 2: OCR on preprocessed image
     logger.info("Step 2: OCR text recognition...")
     ocr_engine = OCREngine(settings=settings, logger=logger)
-    
-    # For pipeline mode, use custom output path if provided for OCR results only
-    ocr_output_path = Path(output_path) if output_path else None
-    ocr_result = ocr_engine.process(input_path=preprocess_result.output_path, output_path=ocr_output_path)
+    ocr_result = ocr_engine.process(input_path=preprocess_result.output_path)
     
     logger.info(
         "OCR processing completed in %.3f seconds. Output: %s",
@@ -178,14 +238,50 @@ def _run_pipeline(input_path: Path, output_path: Optional[str], settings: Settin
         ocr_result.output_path,
     )
     
+    # Step 3: Error correction
+    logger.info("Step 3: Applying error corrections...")
+    error_corrector = ErrorCorrector(settings=settings, logger=logger)
+    correction_result = error_corrector.process(input_path=ocr_result.output_path)
+    
+    logger.info(
+        "Error correction completed in %.3f seconds. Output: %s",
+        correction_result.duration_seconds,
+        correction_result.output_path,
+    )
+    
+    # Step 4: Field validation
+    logger.info("Step 4: Validating fields...")
+    field_validator = FieldValidator(settings=settings, logger=logger)
+    
+    # For pipeline mode, use custom output path if provided for final results only
+    final_output_path = Path(output_path) if output_path else None
+    validation_result = field_validator.process(
+        input_path=correction_result.output_path,
+        output_path=final_output_path
+    )
+    
+    logger.info(
+        "Field validation completed in %.3f seconds. Output: %s",
+        validation_result.duration_seconds,
+        validation_result.output_path,
+    )
+    
     # Final summary
-    total_time = preprocess_result.duration_seconds + ocr_result.duration_seconds
+    total_time = (preprocess_result.duration_seconds + ocr_result.duration_seconds + 
+                  correction_result.duration_seconds + validation_result.duration_seconds)
+    
     logger.info("=== Pipeline Summary ===")
     logger.info("Total processing time: %.3f seconds", total_time)
     logger.info("Preprocessed image: %s", preprocess_result.output_path)
     logger.info("OCR results: %s", ocr_result.output_path)
     logger.info("Text regions found: %d (avg confidence: %.3f)", 
                 ocr_result.total_texts_found, ocr_result.average_confidence)
+    logger.info("Corrections applied: %d", correction_result.corrections_applied)
+    logger.info("Fields validated: %d/%d (%.1f%%)",
+                validation_result.validated_fields,
+                validation_result.total_fields,
+                validation_result.validation_rate * 100)
+    logger.info("Final output: %s", validation_result.output_path)
     
     if preprocess_result.deskew_angle is not None:
         logger.info("Deskew angle applied: %.3f degrees", preprocess_result.deskew_angle)
@@ -194,6 +290,12 @@ def _run_pipeline(input_path: Path, output_path: Optional[str], settings: Settin
         logger.warning(
             "%d text regions have low confidence",
             ocr_result.low_confidence_count,
+        )
+    
+    if validation_result.failed_validations > 0:
+        logger.warning(
+            "%d validation failures detected",
+            validation_result.failed_validations,
         )
     
     return 0
