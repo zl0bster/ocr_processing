@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -87,25 +87,22 @@ class ImagePreprocessor:
         return output_dir / filename
 
     def _deskew(self, image: np.ndarray) -> Tuple[np.ndarray, Optional[float]]:
-        """Correct image rotation based on detected text angle."""
+        """Correct image rotation based on detected text lines using Hough transform."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        _, binary = cv2.threshold(
-            gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU
-        )
-
-        coords = np.column_stack(np.where(binary > 0))
-        if coords.size == 0:
-            return image, None
-
-        angle = cv2.minAreaRect(coords)[-1]
-        if angle < -45.0:
-            angle = -(90.0 + angle)
-        else:
-            angle = -angle
-
-        if abs(angle) < 0.1:
+        
+        # Detect text lines using Hough transform
+        lines = self._detect_text_lines(gray)
+        if len(lines) == 0:
+            return image, 0.0
+        
+        # Calculate skew angle from detected lines
+        angle = self._calculate_skew_angle(lines)
+        
+        # Only apply rotation if confident and angle is significant
+        if not self._should_apply_rotation(angle):
             return image, 0.0
 
+        # Apply rotation
         (height, width) = image.shape[:2]
         center = (width // 2, height // 2)
         rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
@@ -117,6 +114,66 @@ class ImagePreprocessor:
             borderMode=cv2.BORDER_REPLICATE,
         )
         return rotated, angle
+
+    def _detect_text_lines(self, gray: np.ndarray) -> List[np.ndarray]:
+        """Detect text lines using Hough line transform."""
+        # Apply edge detection
+        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+        
+        # Detect lines using probabilistic Hough transform
+        lines = cv2.HoughLinesP(
+            edges,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=100,
+            minLineLength=100,
+            maxLineGap=10
+        )
+        
+        return lines if lines is not None else []
+
+    def _calculate_skew_angle(self, lines: List[np.ndarray]) -> float:
+        """Calculate skew angle from detected lines."""
+        if len(lines) == 0:
+            return 0.0
+        
+        angles = []
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            # Calculate angle of the line
+            angle = np.arctan2(y2 - y1, x2 - x1) * 180.0 / np.pi
+            
+            # Normalize angle to [-45, 45] range for text lines
+            if angle > 45:
+                angle -= 90
+            elif angle < -45:
+                angle += 90
+            
+            # Only consider lines that could be text (not too steep)
+            if abs(angle) < 45:
+                angles.append(angle)
+        
+        if len(angles) == 0:
+            return 0.0
+        
+        # Use median angle to avoid outliers
+        return float(np.median(angles))
+
+    def _should_apply_rotation(self, angle: float) -> bool:
+        """Determine if rotation should be applied based on angle and confidence."""
+        # Only rotate if angle is significant (> 2 degrees)
+        min_rotation_threshold = 2.0
+        
+        # Don't rotate if angle is too small
+        if abs(angle) < min_rotation_threshold:
+            return False
+        
+        # Don't rotate if angle seems unrealistic for text skew
+        max_rotation_threshold = 45.0
+        if abs(angle) > max_rotation_threshold:
+            return False
+        
+        return True
 
     def _enhance(self, image: np.ndarray) -> np.ndarray:
         """Improve image clarity for OCR processing."""
@@ -136,14 +193,43 @@ class ImagePreprocessor:
             )
 
         gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
-        binary = cv2.adaptiveThreshold(
-            gray,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            11,
-            2,
-        )
+
+        if self._settings.enable_illumination_correction:
+            kernel_size = self._settings.illumination_kernel
+            self._logger.debug(
+                "Applying illumination correction with kernel size %d", kernel_size
+            )
+            gray_float = gray.astype(np.float32)
+            background = cv2.GaussianBlur(gray_float, (kernel_size, kernel_size), 0)
+            # Avoid division by zero by adding a small epsilon
+            background = np.maximum(background, 1e-6)
+            normalized = cv2.divide(gray_float, background, scale=255.0)
+            gray = np.clip(normalized, 0, 255).astype(np.uint8)
+
+        if self._settings.binarization_mode == "otsu":
+            kernel_size = self._settings.gaussian_blur_kernel
+            if kernel_size > 1:
+                self._logger.debug(
+                    "Applying Gaussian blur with kernel size %d before Otsu thresholding",
+                    kernel_size,
+                )
+                gray = cv2.GaussianBlur(gray, (kernel_size, kernel_size), 0)
+            _, binary = cv2.threshold(
+                gray,
+                0,
+                255,
+                cv2.THRESH_BINARY + cv2.THRESH_OTSU,
+            )
+        else:
+            self._logger.debug("Using adaptive thresholding mode")
+            binary = cv2.adaptiveThreshold(
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                11,
+                2,
+            )
 
         return binary
 
