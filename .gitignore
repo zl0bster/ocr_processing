@@ -13,6 +13,7 @@ venv/
 # Logs and results
 logs/
 results/
+images/
 
 # Build artifacts
 build/

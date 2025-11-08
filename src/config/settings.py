@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     image_scale_factor: float = 2.0
     enable_deskew: bool = True
     enable_denoising: bool = True
+    processed_suffix: str = "-cor"
     template_name: str = "otk_v1"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

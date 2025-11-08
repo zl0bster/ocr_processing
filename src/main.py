@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from config.settings import Settings
+from preprocessor import ImagePreprocessor
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
@@ -18,10 +19,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="OCR processing pipeline CLI. Future iterations will extend functionality.",
     )
+    parser.add_argument("--file", type=str, help="Path to the image file for preprocessing.")
     parser.add_argument(
-        "--file",
+        "--output",
         type=str,
-        help="Path to the image file for processing (pipeline coming in later iterations).",
+        help="Optional path to store processed image. "
+        "Defaults to the configured output directory with '-cor' suffix.",
     )
     return parser
 
@@ -68,15 +71,32 @@ def main(argv: Optional[list[str]] = None) -> int:
     settings = Settings()
     logger = setup_logging(settings)
 
-    if args.file:
-        logger.info(
-            "Received file '%s' for processing. The processing pipeline will be implemented in upcoming iterations.",
-            args.file,
-        )
-    else:
-        logger.info("No input file provided. Use --file to specify an image for processing.")
+    if not args.file:
+        logger.info("No input file provided. Use --file to specify an image for preprocessing.")
+        return 0
 
-    logger.info("Initialization complete. Awaiting further implementation in next iterations.")
+    input_path = Path(args.file)
+    if not input_path.exists():
+        logger.error("Input file '%s' not found.", input_path)
+        return 1
+
+    output_path = Path(args.output) if args.output else None
+    preprocessor = ImagePreprocessor(settings=settings, logger=logger)
+
+    try:
+        result = preprocessor.process(input_path=input_path, output_path=output_path)
+    except Exception as exc:
+        logger.error("Image preprocessing failed: %s", exc, exc_info=logger.level == logging.DEBUG)
+        return 1
+
+    logger.info(
+        "Preprocessing succeeded. Output: %s (elapsed %.3f seconds)",
+        result.output_path,
+        result.duration_seconds,
+    )
+    if result.deskew_angle is not None:
+        logger.info("Deskew angle applied: %.3f degrees", result.deskew_angle)
+
     return 0
 
 
