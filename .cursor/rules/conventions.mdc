@@ -1,0 +1,178 @@
+---
+alwaysApply: true
+---
+
+# Development Rules for AI Assistant
+
+See @vision.md for the foundation
+
+## How to Use These Rules
+- Apply these principles consistently across all code you write
+- When in doubt, choose simpler solutions over complex ones
+- Reference @vision.md for specific architectural decisions
+- Prioritize code readability and maintainability
+
+## Technologies
+- Follow the technology stack and project structure defined in @vision.md
+- Ensure consistency with architectural decisions in @vision.md
+
+## Core Development Principles
+
+### KISS Philosophy
+- **Maximum simplicity of solutions** - choose the simplest solution that works
+- **No overengineering** - don't complicate architecture upfront
+- **YAGNI** - don't add what's not needed now
+- **Single responsibility** - one module = one function
+
+### Iterative Approach
+- **MVP-first** - first a minimally working version
+- **Fast cycles** development → test → feedback
+- **Fail fast, learn fast** - quick identification and correction of errors
+
+### Code Quality
+- **Readability over optimization** - clear code is more important than fast code
+- **Simple, understandable solutions** - avoid "clever" solutions
+- **Refactor when necessary, but not upfront**
+
+### Architectural Principles
+- **Design patterns** use the best suitable ones with concise and clear documentation
+- **Layered architecture** - clear separation of layers (API, Business Logic, Data)
+- **Stateless** - bot doesn't store state between restarts
+- **Single responsibility** - each module solves one task
+
+## Code Style
+
+### Python Conventions
+- **PEP 8** - standard Python style
+- **Type hints** - use type hints everywhere
+- **Pydantic models** for input/output data validation
+- **Docstrings** for public functions and classes
+
+### Code Structure
+- **Descriptive names** for variables and functions - name should explain purpose
+- **Keep functions focused** - if function becomes too long, consider breaking into subfunctions
+- **Short functions** - easier to test and understand
+- **Comments** only where code is not obvious
+- **Constants** at the beginning of file or in separate module
+
+### Examples of Good Style
+```python
+# ✅ Good: descriptive names, short function
+def parse_user_input(text: str) -> Optional[str]:
+    """Parses user input for relevant data."""
+    pattern = r'\b\d{4,5}\b'
+    match = re.search(pattern, text)
+    return match.group(0) if match else None
+
+# ✅ Good: single responsibility
+def validate_input_data(data: InputData) -> bool:
+    """Validates input data correctness."""
+    return bool(data.id and data.status)
+
+# ❌ Bad: too long function with multiple responsibilities
+def process_complex_operation(input_data: str, user_id: int, session_id: str):
+    # 50+ lines of code, does many different things
+```
+
+### Imports
+```python
+# Standard library
+import logging
+from typing import List, Optional
+
+# External libraries
+from framework import Bot
+from validation import BaseModel
+
+# Local modules
+from project.core.config import settings
+```
+
+### Organization Principles
+- **Modularity** - separation by functionality
+- **Clear boundaries** between layers
+- **Code reuse** through common modules
+- **Isolation** of external dependencies
+
+## Working with Dependencies
+
+### Dependency Management
+- **requirements.txt** for version pinning
+- **Virtual environments** for isolation
+- **Minimal dependencies** - only necessary packages
+- **Updates** only when necessary
+
+### External APIs
+- **Retry mechanism** for temporary errors
+- **Timeouts** for all HTTP requests
+- **Error handling** with logging
+- **Fallback** strategies when services are unavailable
+
+## Error Handling
+
+### Error Handling Principles
+- **Try-catch blocks** for all external calls
+- **Log all errors** with context
+- **User notifications** about problems via Telegram
+- **Graceful degradation** - work with partial failures
+
+### Logging
+- **Structured logs** with relevant context
+- **Different levels** - DEBUG, INFO, WARNING, ERROR
+- **Event correlation** through unique identifiers
+- **Security** - masking secrets
+- **No emojis** in logs or stream messages — they cause debugging and parsing errors
+
+### Error Types
+- **API errors** - retry with exponential delay
+- **Data validation** - clear messages to user
+- **System errors** - logging + fallback
+- **Critical errors** - safe termination
+
+## Configuration
+
+### Configuration Approach
+- **Single source of truth** - .env + environment variables
+- **Pydantic BaseSettings** for settings validation
+- **Priority**: ENV variables > .env > default values
+- **Secret separation** - API keys only in ENV
+
+### Configuration Structure
+- **Centralized configuration** - at startup
+- **Validation** of all parameters at startup
+- **Typing** of all settings
+- **Documentation** of parameters in .env.example
+
+### Security
+- **Secrets** never committed
+- **Masking** in logs
+- **Validation** of required parameters
+
+## Testing
+
+### Testing Approach
+ - **Manual testing** of main scenarios is mandatory
+ - **pytest** as main framework
+
+### Test Writing Principles
+- **Simplicity** - tests should be understandable
+- **Simple asserts** - don't neglect basic checks
+- **Isolation** - each test is independent
+- **Repeatability** - same result on repeated run
+- **Speed** - tests should run quickly
+- **Localization** - tests should be located locally in their folder according to project structure
+
+### Examples of Simple Tests
+```python
+# ✅ Good: simple asserts
+def test_parse_user_input():
+    assert parse_user_input("Order 1234 ready") == "1234"
+    assert parse_user_input("No order") is None
+
+def test_validate_input_data():
+    data = InputData(id="1234", status="approved")
+    assert validate_input_data(data) is True
+    
+    invalid_data = InputData(id="", status="approved")
+    assert validate_input_data(invalid_data) is False
+```

@@ -1,0 +1,435 @@
+---
+alwaysApply: true
+---
+
+# Project Development Workflow
+
+## ⚠️ CRITICAL RULE: NEVER MODIFY ANY FILES WITHOUT APPROVAL!
+
+**FORBIDDEN**: Create/modify ANY files (code, documentation, configuration, etc.) without obtaining explicit user consent.
+
+**MANDATORY**: Always follow this workflow:
+1. **Propose changes** - describe what you want to change and why
+2. **Wait for approval** - get explicit user confirmation
+3. **Implement approved changes** - modify only what was approved
+4. **DO NOT make changes** without completing steps 1-2
+
+This rule applies to:
+- ✅ Source code files
+- ✅ Documentation files (*.md, *.txt, etc.)
+- ✅ Configuration files
+- ✅ ANY other project files
+
+## 📋 Documentation and File Modification Rules
+
+### CRITICAL: Always Get Approval First
+
+**For ALL file modifications (not just code):**
+
+1. **Analyze** what needs to be changed
+2. **Propose changes** clearly:
+   ```
+   I propose to modify [file_name]:
+   - Change 1: [description]
+   - Change 2: [description]
+   - Reason: [why these changes are needed]
+   
+   Do you approve these changes?
+   ```
+3. **Wait for explicit approval** - look for user's "yes", "approved", "ok", "go ahead", etc.
+4. **Implement only approved changes** - don't add extra modifications
+5. **Report completion** - inform user about what was changed
+
+### Examples
+
+**❌ WRONG Approach:**
+```
+User: "Add rule about commits"
+Assistant: *immediately modifies file without asking*
+```
+
+**✅ CORRECT Approach:**
+```
+User: "Add rule about commits"
+Assistant: "I propose to add the following rule to workflow.mdc:
+- Add 'Commit messages must be in English' to Mandatory section (line 130)
+- Add 'No Cyrillic in commits' to Forbidden section (line 121)
+- Add new 'Language Requirements' subsection with examples
+
+Do you approve this approach?"
+
+User: "Yes, approved"
+Assistant: *makes approved changes*
+```
+
+### Scope of This Rule
+
+**Applies to:**
+- Documentation updates (*.md, *.txt, *.rst)
+- Code file modifications (*.py, *.js, etc.)
+- Configuration changes (*.json, *.yaml, *.toml, etc.)
+- Adding/removing files
+- Refactoring and renaming
+
+**Exceptions:** None - ALWAYS get approval first!
+
+## Work Principles
+
+### Core Rules
+- **Strict adherence to plan** from @tasklist.md
+- **Follow principles** from @vision.md and @conventions.md
+- **Iterative approach** - one iteration = one verifiable result
+- **Mandatory approval** before implementation
+- **Progress updates** after each stage
+
+### Development Philosophy
+- Follow KISS principles from @conventions.md
+- Apply iterative approach from @conventions.md
+- Maintain code quality standards from @conventions.md
+
+## Iteration Work Process
+
+### 1. Iteration Preparation
+1. **Study iteration plan** in @tasklist.md
+2. **Analyze requirements** from @vision.md
+3. **Check dependencies** from previous iterations
+4. **Define readiness criteria** (testing)
+
+### 2. Solution Approval
+1. **Propose architectural solution** with code examples
+2. **Describe file structure** and components
+3. **Explain testing approach**
+4. **MANDATORY: Wait for user confirmation**
+
+### 3. Implementation
+1. **Create/update files** according to plan
+2. **Follow code style rules** from @conventions.md (PEP 8, type hints, etc.)
+3. **Apply error handling principles** from @conventions.md
+4. **Add necessary dependencies** following @conventions.md guidelines
+5. **Implement testing** according to @conventions.md testing approach
+
+### 4. Verification and Progress Update
+1. **Test functionality**
+2. **Update status in @tasklist.md**
+3. **Make commit** with change description
+4. **Agree on transition** to next iteration
+
+## Example of Correct Action Sequence
+
+### Iteration: "External API Integration"
+
+**Step 1: Requirements Analysis**
+```
+Studying iteration plan 2 from @tasklist.md:
+- Add API client dependency to dependencies.txt
+- Create src/api_client.py — API adapter
+- Process all messages through external API
+- Log API requests/responses
+- Basic API error handling
+```
+
+**Step 2: Solution Proposal**
+```
+I propose the following solution:
+
+1. File structure:
+   - src/api_client.py - external API adapter
+   - src/message_handler.py - update message handler
+   - dependencies.txt - add required packages
+
+2. api_client.py code example:
+   ```python
+   import api_client
+   from typing import Optional
+   
+   class ExternalAPIClient:
+       def __init__(self, api_key: str):
+           self.client = api_client.connect(api_key=api_key)
+       
+       def get_response(self, message: str) -> Optional[str]:
+           # implementation
+   ```
+
+3. Testing: verify input → process → validate output
+
+Do you agree with this approach?
+```
+
+**Step 3: Implementation (after approval)**
+```
+Implementing the proposed solution:
+- Creating src/api_client.py
+- Updating src/message_handler.py
+- Adding dependencies to dependencies.txt
+```
+
+**Step 4: Progress Update**
+```
+Updating @tasklist.md:
+- [x] Add API client dependency to dependencies.txt
+- [x] Create src/api_client.py — API adapter
+- [x] Process all messages through external API
+- [x] Log API requests/responses
+- [x] Basic API error handling
+
+Status: ✅ Complete
+```
+
+## Rule Lists
+
+### Forbidden
+- ❌ Modify ANY files without explicit user approval
+- ❌ Create/change documentation without proposing changes first
+- ❌ Start implementation without approval
+- ❌ Skip progress updates in @tasklist.md
+- ❌ Make commits without change descriptions
+- ❌ Make iteration commits without iteration number (must include "iteration N")
+- ❌ Use Cyrillic (Russian) characters in commit messages
+- ❌ Write verbose commit messages with explanations and extra details
+- ❌ Move to next iteration without completing current one
+- ❌ Ignore principles from @vision.md and @conventions.md
+- ❌ Create complex solutions without necessity
+
+### Mandatory
+- ✅ Propose ALL changes before making them (code, docs, configs, etc.)
+- ✅ Wait for explicit user approval before modifying any file
+- ✅ Approve solution before implementation
+- ✅ Update task status in @tasklist.md
+- ✅ Make commits after completing iteration
+- ✅ Include iteration number in commit when working on @tasklist.md iterations
+- ✅ Write all commit messages in English only
+- ✅ Keep commit messages concise (3-5 bullet points max, no details)
+- ✅ Test functionality before moving forward
+- ✅ Follow KISS principle
+- ✅ Document changes
+
+### Critically Important
+- 🔥 **NEVER modify files without approval** - propose changes first, wait for "yes"
+- 🔥 **MANDATORY: Wait for approval** before implementation
+- 🔥 **Propose changes for ALL files** - code, documentation, configs, everything
+- 🔥 **Update progress** after each stage
+- 🔥 **Follow plan** from @tasklist.md strictly
+- 🔥 **Make commits** after completing iteration
+- 🔥 **Test** before moving to next iteration
+- 🔥 **Use current dates** in @tasklist.md (not examples!)
+
+## @tasklist.md Update Rules
+
+### When completing subtask
+```diff
+- [x] Create src/api_client.py — API adapter (keys from .env), timeouts
++ [x] Create src/api_client.py — API adapter (keys from .env), timeouts
+```
+
+### When completing iteration
+```diff
+| [x] 2 | External API Integration | ✅ Complete | `/ask` → API response | YYYY-MM-DD |
+```
+
+### Progress report update
+```diff
+- Status: Iteration 1 completed successfully
+- Completed: 1/6
+- Last update: 2025-01-26
++ Status: Iteration 2 completed successfully  
++ Completed: 2/6
++ Last update: YYYY-MM-DD
+```
+
+### CRITICALLY IMPORTANT: Current Dates
+- 🔥 **ALWAYS use current date** in YYYY-MM-DD format
+- 🔥 **DO NOT use** example dates like "2025-09-09"
+- 🔥 **Update "Last update"** with every @tasklist.md change
+- 🔥 **Check date relevance** before commit
+
+## Commit Execution Rules
+
+### Commit Style: Concise and Clear
+
+**CRITICAL**: Keep commit messages short and focused.
+
+**Rules:**
+- ✅ List only main changes, one per line
+- ✅ Use concise descriptions without explanations
+- ✅ No "why" or reasoning in commit body
+- ✅ No testing information or extra details
+- ✅ Maximum 3-5 bullet points
+- ❌ No verbose descriptions or justifications
+
+### Commit Message Format
+
+**For iteration work (from @tasklist.md):**
+```
+feat: iteration N - brief description
+
+- main change 1
+- main change 2
+- main change 3
+```
+
+**For other changes (docs, fixes, refactoring):**
+```
+type: brief description
+
+- main change 1
+- main change 2
+- main change 3
+```
+
+### Examples
+
+**❌ TOO VERBOSE (ITERATION):**
+```
+feat: iteration 2 - external API integration
+
+- Added API client for external service with timeout configuration
+- Updated message processing handler to route through API
+- Added comprehensive request/response logging for debugging
+- Implemented basic error handling with retry logic
+
+Testing: verify API communication works correctly
+```
+
+**✅ CORRECT (ITERATION - CONCISE):**
+```
+feat: iteration 2 - external API integration
+
+- Added API client with timeouts
+- Updated message handler
+- Added request/response logging
+- Implemented error handling
+```
+
+**✅ CORRECT (NON-ITERATION - MINIMAL):**
+```
+docs: add approval rule and English commits
+
+- Added mandatory approval workflow
+- Added English-only commit requirement
+- Updated forbidden/mandatory lists
+```
+
+**More examples:**
+
+**✅ Iteration work:**
+```
+feat: iteration 1 - telegram bot setup
+
+- Created bot handler
+- Added environment configuration
+- Implemented basic commands
+```
+
+**✅ Documentation:**
+```
+docs: update workflow rules
+
+- Added concise commit guidelines
+- Updated examples
+```
+
+**✅ Fix:**
+```
+fix: error handling in API client
+
+- Fixed timeout handling
+- Added retry logic
+```
+
+### Mandatory Elements
+
+**Always required:**
+- Type prefix (feat/docs/fix/refactor)
+- Brief change description
+- List of main changes (3-5 items max)
+- One line per change, no details
+
+**For iteration work (from @tasklist.md):**
+- **Iteration number MUST be included** in format: `feat: iteration N - description`
+- Example: `feat: iteration 2 - API integration`
+
+**For other changes:**
+- No iteration number needed
+- Example: `docs: update workflow rules`
+
+### Language Requirements
+**CRITICAL**: All commit messages MUST be written in English only.
+
+#### Forbidden
+- ❌ Using Cyrillic (Russian) characters in any part of commit message
+- ❌ Using any non-English languages in commit messages
+- ❌ Mixing languages within commit message
+
+#### Mandatory
+- ✅ Write commit subject line in English
+- ✅ Write commit body/description in English
+- ✅ Write all technical terms and file names using Latin characters
+- ✅ Use proper English grammar and spelling
+
+#### Examples
+**❌ WRONG:**
+```
+feat: итерация 2 - интеграция API
+
+- Добавлен клиент API
+- Обработка сообщений
+```
+
+**✅ CORRECT:**
+```
+feat: iteration 2 - API integration
+
+- Added API client
+- Implemented message processing
+```
+
+## Mandatory Checklist
+
+### Before Making ANY File Changes
+- [ ] **Identified what needs to be changed** and why
+- [ ] **Proposed changes to user** with clear description
+- [ ] **Waited for explicit approval** ("yes", "approved", "ok", "go ahead")
+- [ ] **Received confirmation** from user before proceeding
+- [ ] Ready to implement ONLY approved changes (no extras)
+
+### Before Starting Iteration
+- [ ] Studied iteration plan in @tasklist.md
+- [ ] Analyzed requirements from @vision.md
+- [ ] Checked dependencies from previous iterations
+- [ ] Defined readiness criteria
+
+### Before Implementation
+- [ ] Solution approved by user
+- [ ] Code examples proposed
+- [ ] Testing approach described
+- [ ] Confirmation received
+
+### After Implementation
+- [ ] Functionality tested
+- [ ] Code follows style rules from @conventions.md (PEP 8, type hints, etc.)
+- [ ] Error handling follows @conventions.md principles
+- [ ] Testing approach matches @conventions.md guidelines
+- [ ] Status updated in @tasklist.md
+- [ ] **Current dates checked** in @tasklist.md
+- [ ] Commit made with description
+- [ ] **Commit includes iteration number** (if working on @tasklist.md iteration)
+- [ ] **Commit message written in English only** (no Cyrillic)
+- [ ] **Commit message is concise** (3-5 bullet points, no extra details)
+- [ ] Transition to next iteration agreed
+
+### Critical Checks
+- [ ] All iteration tasks completed
+- [ ] Testing passed successfully
+- [ ] Progress updated in @tasklist.md
+- [ ] **Current dates** specified in @tasklist.md
+- [ ] Commit created with proper description
+- [ ] **Commit includes "iteration N"** (for @tasklist.md work)
+- [ ] **Commit message in English** (no Cyrillic characters)
+- [ ] **Commit message is concise** (3-5 points max, no verbose descriptions)
+- [ ] User confirmed readiness for next iteration
+
+## Document References
+- @tasklist.md - development plan and progress
+- @vision.md - technical vision and principles
+- @conventions.md - code development rules
+- @product_idea.md - product concept

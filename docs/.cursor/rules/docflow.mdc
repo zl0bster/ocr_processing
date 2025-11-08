@@ -1,0 +1,320 @@
+---
+title: "Documentation Workflow Rules"
+version: "1.0"
+last_updated: "2025-01-26"
+tags: ["workflow", "documentation", "rules", "process"]
+complexity: "low"
+llm_relevance: "high"
+domain: "workflow"
+---
+
+# Documentation Workflow Rules
+
+## 🎯 Context for LLM
+This document defines the mandatory workflow for working with documentation and files. All file modifications must follow this structured approach.
+
+## 🤖 Instructions for LLM Agent
+
+### Core Workflow Principles:
+1. **Analyze** attached files and materials first
+2. **Plan** your approach to the user's task
+3. **Propose** implementation steps
+4. **Request** confirmation before any changes
+5. **Implement** only after explicit approval
+6. **Progress** to next step systematically
+
+### ⚠️ CRITICAL: Documentation Work Only
+**ABSOLUTELY FORBIDDEN during documentation work:**
+- ❌ **DO NOT generate, create, or modify ANY code implementation files** (*.py, *.js, *.ts, *.java, etc.)
+- ❌ **DO NOT create source code files** in src/, lib/, app/, or any code directories
+- ❌ **DO NOT modify existing code files** even if they relate to documentation
+- ❌ **DO NOT generate code examples as separate files** - only show code in markdown blocks within documentation
+
+**MANDATORY:**
+- ✅ **ONLY work with documentation files** (*.md, *.txt, *.rst, etc.)
+- ✅ **ONLY modify documentation structure and content**
+- ✅ **Code examples ONLY in markdown code blocks**, never as actual files
+
+---
+
+## 1. Analysis Phase
+
+### 1.1. File Analysis
+- **Read** all provided files completely
+- **Understand** project context and existing structure
+- **Identify** dependencies and relationships
+- **Note** existing patterns and conventions
+
+### 1.2. Task Understanding
+- **Parse** user requirements carefully
+- **Break down** complex tasks into components
+- **Identify** potential challenges and dependencies
+- **Consider** impact on existing codebase
+- **Ensure** consistency with referenced documents
+- **Verify** Single Source of Truth principle compliance
+
+---
+
+## 2. Planning Phase
+
+### 2.1. Approach Design
+- **Think through** the user's task systematically
+- **Design** step-by-step execution plan
+- **Consider** alternative approaches
+- **Plan** testing and validation strategy
+
+### 2.2. Step Definition
+- **Break down** task into clear, actionable steps
+- **Define** deliverables for each step
+- **Identify** dependencies between steps
+- **Estimate** complexity and effort
+
+---
+
+## 3. Proposal Phase
+
+### 3.1. Implementation Proposal
+- **Present** clear step-by-step plan
+- **Explain** approach and rationale
+- **Show** code examples or file structures
+- **Describe** testing approach
+
+### 3.2. Confirmation Request
+- **Ask** specific clarifying questions (numbered)
+- **Request** explicit approval for changes
+- **Wait** for user confirmation before proceeding
+- **Never** modify files without approval
+
+---
+
+## 4. Implementation Phase
+
+### 4.1. Approved Changes Only
+- **Implement** only what was approved
+- **Follow** existing documentation patterns and conventions
+- **Maintain** documentation quality standards
+- **Verify** accuracy before proceeding
+- **FORBIDDEN**: Generate or modify code implementation files during documentation work
+- **ONLY**: Work with documentation files (*.md, *.txt, *.rst, etc.)
+
+### 4.2. Progress Tracking
+- **Complete** current step fully
+- **Verify** documentation accuracy
+- **Report** completion to user
+- **Move** to next step only after confirmation
+
+---
+
+## 5. Question Framework
+
+### 5.1. Clarifying Questions
+- **Number** all questions for easy reference
+- **Ask** specific, actionable questions
+- **Focus** on implementation details
+- **Avoid** vague or open-ended questions
+
+### 5.2. Question Types
+- **Scope**: What exactly needs to be done?
+- **Approach**: How should it be implemented?
+- **Dependencies**: What are the requirements?
+- **Constraints**: Are there any limitations?
+
+---
+
+## 6. File Modification Rules
+
+### 6.1. Mandatory Approval Process
+- **Propose** all changes before implementation
+- **Describe** what will be modified and why
+- **Wait** for explicit user confirmation
+- **Implement** only approved changes
+
+### 6.2. Change Documentation
+- **Explain** rationale for each change
+- **Show** before/after examples
+- **Document** impact on existing code
+- **Maintain** change history
+
+### 6.3. Date Management Rules
+- **Request** current system date before updating any revision dates
+- **Never** use placeholder or example dates in documentation
+- **Verify** date accuracy with user before applying changes
+- **Use** consistent date format (YYYY-MM-DD) across all documents
+- **Update** last_updated field whenever document content changes
+
+### 6.4. CRITICAL PROHIBITION: No Code Files During Documentation Work
+**ABSOLUTELY FORBIDDEN when working on documentation:**
+- ❌ **DO NOT create, generate, or modify ANY code implementation files**
+- ❌ **DO NOT create source code files** (Python, JavaScript, TypeScript, Java, etc.)
+- ❌ **DO NOT modify existing code files** even if documentation mentions them
+- ❌ **DO NOT generate code files** for examples or prototypes
+
+**STRICTLY ALLOWED during documentation work:**
+- ✅ **ONLY documentation files** (*.md, *.txt, *.rst, *.yaml, *.json config docs)
+- ✅ **Code examples ONLY in markdown code blocks** within documentation
+- ✅ **Structure proposals** in documentation format only
+
+**This rule is NON-NEGOTIABLE and applies to ALL documentation tasks.**
+
+---
+
+## 7. Error Handling
+
+### 7.1. Implementation Errors
+- **Stop** immediately if errors occur
+- **Report** error details to user
+- **Propose** alternative approach
+- **Wait** for guidance before continuing
+
+### 7.2. Validation Failures
+- **Identify** root cause of failure
+- **Suggest** corrective actions
+- **Request** user input on next steps
+- **Never** proceed with broken implementation
+
+---
+
+## 8. Communication Standards
+
+### 8.1. Clarity and Conciseness
+- **Be** laconic and expressive - avoid verbosity
+- **Use** clear, direct language
+- **Avoid** unnecessary explanations and wordiness
+- **Focus** on actionable information only
+- **Eliminate** redundant phrases and filler words
+
+### 8.2. Progress Reporting
+- **Report** completion of each step concisely
+- **Confirm** task completion
+- **Ask** for next step approval
+- **Maintain** clear communication flow
+
+---
+
+## 9. Documentation Quality
+
+### 9.1. Formatting Standards
+- **Use** clear markdown formatting
+- **Structure** content with headers and lists
+- **Apply** consistent formatting patterns
+- **Ensure** LLM-friendly formatting
+
+### 9.2. Content Validation
+- **Verify** accuracy of information
+- **Check** completeness of coverage
+- **Ensure** logical flow and organization
+- **Confirm** user requirements are met
+- **Validate** consistency with referenced documents
+- **Check** Single Source of Truth compliance
+- **Flag** any duplications or contradictions
+
+---
+
+## 10. Workflow Checklist
+
+### Before Starting:
+- [ ] Analyzed all provided files
+- [ ] Understood user requirements
+- [ ] Planned implementation approach
+- [ ] Prepared step-by-step proposal
+- [ ] **CONFIRMED**: This is documentation work ONLY, no code files will be generated
+
+### Before Implementation:
+- [ ] Received explicit user approval
+- [ ] Clarified all ambiguities
+- [ ] Confirmed approach is correct
+- [ ] Ready to proceed with changes
+- [ ] **VERIFIED**: Only documentation files will be modified, NO code files
+
+### After Implementation:
+- [ ] Verified documentation accuracy
+- [ ] Confirmed formatting is correct
+- [ ] Verified all dates are current and accurate
+- [ ] Checked consistency with referenced documents
+- [ ] Validated Single Source of Truth compliance
+- [ ] Flagged any duplications or contradictions
+- [ ] Reported completion to user
+- [ ] Ready for next step approval
+
+---
+
+## 11. Single Source of Truth Principles
+
+### 11.1. Documentation Integrity
+- **Avoid** duplicating information across documents
+- **Reference** existing documents instead of copying content
+- **Maintain** clear ownership of each piece of information
+- **Update** source documents when changes are needed
+
+### 11.2. Validation Requirements
+- **Check** for information duplication
+- **Verify** all references point to authoritative sources
+- **Flag** contradictions between documents
+- **Alert** user to any Single Source of Truth violations
+
+### 11.3. Compliance Checklist
+- [ ] No duplicate information across documents
+- [ ] All references point to authoritative sources
+- [ ] No contradictions with existing documentation
+- [ ] Clear ownership of each information piece
+- [ ] User alerted to any violations
+
+---
+
+## 12. CRITICAL PROHIBITIONS FOR LLM AGENT
+
+### ⚠️ ABSOLUTE BAN: No Code Implementation Files During Documentation Work
+
+**This is a MANDATORY, NON-NEGOTIABLE rule that MUST be followed in ALL documentation tasks.**
+
+#### ❌ FORBIDDEN ACTIONS (HARD STOP):
+
+1. **DO NOT create, generate, or write ANY code implementation files**
+   - Python files (*.py)
+   - JavaScript/TypeScript files (*.js, *.ts, *.jsx, *.tsx)
+   - Java files (*.java)
+   - Any other programming language source files
+
+2. **DO NOT modify existing code implementation files**
+   - Even if documentation references them
+   - Even if user asks to "update related code"
+   - Even if code seems relevant to documentation
+
+3. **DO NOT create code files for examples or demonstrations**
+   - Example implementations
+   - Prototype code
+   - Test files
+   - Configuration code files
+
+4. **DO NOT create files in code directories**
+   - src/, lib/, app/, components/, etc.
+   - Any directory containing implementation code
+
+#### ✅ ALLOWED ACTIONS (ONLY):
+
+1. **ONLY documentation files** (*.md, *.txt, *.rst, etc.)
+2. **ONLY show code examples in markdown code blocks** within documentation
+3. **ONLY propose code structure** in documentation format
+4. **ONLY describe implementation** in documentation text
+
+#### 🔥 ENFORCEMENT:
+
+- **This rule applies to ALL documentation tasks**
+- **This rule applies REGARDLESS of user requests**
+- **If user requests code generation, EXPLAIN this prohibition clearly**
+- **This rule is HARD-CODED and CANNOT be overridden**
+
+#### 📋 VIOLATION CHECKLIST:
+
+Before ANY file operation, verify:
+- [ ] Is this a documentation file? (*.md, *.txt, *.rst)
+- [ ] Am I creating/modifying code files? → **STOP IMMEDIATELY**
+- [ ] Am I in a code directory? → **STOP IMMEDIATELY**
+- [ ] Does this file have a code extension? → **STOP IMMEDIATELY**
+
+**If ANY answer suggests code file creation/modification → ABORT the operation immediately.**
+
+---
+
+*Last updated: 2025-01-26*
+*Version: 1.0*
