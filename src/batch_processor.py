@@ -157,17 +157,47 @@ class BatchProcessor:
                 try:
                     # Step 1: Preprocessing
                     preprocess_result = preprocessor.process(input_path=image_file)
+                    self._logger.info("  Step 1/4: Preprocessing completed in %.3f seconds. Output: %s",
+                                     preprocess_result.duration_seconds,
+                                     preprocess_result.output_path)
+                    if preprocess_result.deskew_angle is not None:
+                        self._logger.debug("  Deskew angle: %.3f degrees", preprocess_result.deskew_angle)
                     
                     # Step 2: OCR with shared engine
                     ocr_result = ocr_engine.process(input_path=preprocess_result.output_path)
+                    self._logger.info("  Step 2/4: OCR completed in %.3f seconds. Output: %s",
+                                     ocr_result.duration_seconds,
+                                     ocr_result.output_path)
+                    self._logger.info("  Found %d text regions (avg confidence: %.3f)",
+                                     ocr_result.total_texts_found,
+                                     ocr_result.average_confidence)
+                    if ocr_result.low_confidence_count > 0:
+                        self._logger.warning("  %d text regions have low confidence",
+                                            ocr_result.low_confidence_count)
                     
                     # Step 3: Error correction
                     correction_result = error_corrector.process(input_path=ocr_result.output_path)
+                    self._logger.info("  Step 3/4: Error correction completed in %.3f seconds. Output: %s",
+                                     correction_result.duration_seconds,
+                                     correction_result.output_path)
+                    self._logger.info("  Applied %d corrections (%.1f%%)",
+                                     correction_result.corrections_applied,
+                                     correction_result.correction_rate * 100)
                     
                     # Step 4: Field validation
                     validation_result = field_validator.process(
                         input_path=correction_result.output_path
                     )
+                    self._logger.info("  Step 4/4: Validation completed in %.3f seconds. Output: %s",
+                                     validation_result.duration_seconds,
+                                     validation_result.output_path)
+                    self._logger.info("  Validated %d/%d fields (%.1f%%)",
+                                     validation_result.validated_fields,
+                                     validation_result.total_fields,
+                                     validation_result.validation_rate * 100)
+                    if validation_result.failed_validations > 0:
+                        self._logger.warning("  %d validation failures detected",
+                                            validation_result.failed_validations)
                     
                     file_duration = time.perf_counter() - file_start
                     
@@ -211,6 +241,15 @@ class BatchProcessor:
                 
                 try:
                     ocr_result = ocr_engine.process(input_path=image_file)
+                    self._logger.info("  OCR completed in %.3f seconds. Output: %s",
+                                     ocr_result.duration_seconds,
+                                     ocr_result.output_path)
+                    self._logger.info("  Found %d text regions (avg confidence: %.3f)",
+                                     ocr_result.total_texts_found,
+                                     ocr_result.average_confidence)
+                    if ocr_result.low_confidence_count > 0:
+                        self._logger.warning("  %d regions with low confidence",
+                                            ocr_result.low_confidence_count)
                     file_duration = time.perf_counter() - file_start
                     
                     file_results.append(FileResult(
@@ -249,7 +288,12 @@ class BatchProcessor:
             file_start = time.perf_counter()
             
             try:
-                preprocessor.process(input_path=image_file)
+                preprocess_result = preprocessor.process(input_path=image_file)
+                self._logger.info("  Preprocessing completed in %.3f seconds. Output: %s",
+                                 preprocess_result.duration_seconds,
+                                 preprocess_result.output_path)
+                if preprocess_result.deskew_angle is not None:
+                    self._logger.debug("  Deskew angle: %.3f degrees", preprocess_result.deskew_angle)
                 file_duration = time.perf_counter() - file_start
                 
                 file_results.append(FileResult(
@@ -288,9 +332,19 @@ class BatchProcessor:
             
             try:
                 correction_result = error_corrector.process(input_path=image_file)
+                self._logger.info("  Error correction completed in %.3f seconds",
+                                 correction_result.duration_seconds)
+                self._logger.info("  Applied %d corrections", correction_result.corrections_applied)
+                
                 validation_result = field_validator.process(
                     input_path=correction_result.output_path
                 )
+                self._logger.info("  Validation completed in %.3f seconds. Output: %s",
+                                 validation_result.duration_seconds,
+                                 validation_result.output_path)
+                self._logger.info("  Validated %d/%d fields",
+                                 validation_result.validated_fields,
+                                 validation_result.total_fields)
                 file_duration = time.perf_counter() - file_start
                 
                 file_results.append(FileResult(
