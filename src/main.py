@@ -13,6 +13,7 @@ from preprocessor import ImagePreprocessor
 from ocr_engine import OCREngine
 from error_corrector import ErrorCorrector
 from field_validator import FieldValidator
+from batch_processor import BatchProcessor
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
@@ -24,6 +25,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--file", type=str, help="Path to the image file for processing.")
     parser.add_argument(
+        "--batch",
+        "--directory",
+        dest="batch_dir",
+        type=str,
+        help="Path to directory for batch processing of multiple images.",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         help="Optional path to store processed results. "
@@ -32,9 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["preprocess", "ocr", "correction", "pipeline"],
+        choices=["preprocess", "ocr", "correction", "pipeline", "batch"],
         default="pipeline",
-        help="Processing mode: preprocess only, OCR only, correction only, or full pipeline (default: pipeline).",
+        help="Processing mode: preprocess only, OCR only, correction only, full pipeline, or batch (default: pipeline).",
     )
     return parser
 
@@ -81,8 +89,30 @@ def main(argv: Optional[list[str]] = None) -> int:
     settings = Settings()
     logger = setup_logging(settings)
 
+    # Check for batch mode
+    if args.batch_dir or args.mode == "batch":
+        if not args.batch_dir:
+            logger.error("Batch mode requires --batch or --directory argument with path to directory.")
+            return 1
+        batch_path = Path(args.batch_dir)
+        if not batch_path.exists():
+            logger.error("Batch directory '%s' not found.", batch_path)
+            return 1
+        if not batch_path.is_dir():
+            logger.error("Batch path '%s' is not a directory.", batch_path)
+            return 1
+        
+        try:
+            # Determine mode - default to pipeline for batch
+            batch_mode = args.mode if args.mode != "batch" else "pipeline"
+            return _run_batch(batch_path, args.output, batch_mode, settings, logger)
+        except Exception as exc:
+            logger.error("Batch processing failed: %s", exc, exc_info=logger.level == logging.DEBUG)
+            return 1
+
+    # Single file mode
     if not args.file:
-        logger.info("No input file provided. Use --file to specify an image for processing.")
+        logger.info("No input file or batch directory provided. Use --file or --batch to specify input.")
         return 0
 
     input_path = Path(args.file)
@@ -97,7 +127,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return _run_ocr(input_path, args.output, settings, logger)
         elif args.mode == "correction":
             return _run_correction(input_path, args.output, settings, logger)
-        elif args.mode == "pipeline":
+        elif args.mode == "pipeline" or args.mode == "batch":
             return _run_pipeline(input_path, args.output, settings, logger)
         else:
             logger.error("Unknown processing mode: %s", args.mode)
@@ -299,6 +329,38 @@ def _run_pipeline(input_path: Path, output_path: Optional[str], settings: Settin
         )
     
     return 0
+
+
+def _run_batch(batch_dir: Path, output_path: Optional[str], mode: str, settings: Settings, logger: logging.Logger) -> int:
+    """Run batch processing on directory of images."""
+    logger.info("Starting batch processing of directory: %s", batch_dir)
+    logger.info("Processing mode: %s", mode)
+    
+    output_path_obj = Path(output_path) if output_path else None
+    batch_processor = BatchProcessor(settings=settings, logger=logger)
+    
+    result = batch_processor.process_directory(
+        input_dir=batch_dir,
+        output_dir=output_path_obj,
+        mode=mode
+    )
+    
+    # Log final results
+    logger.info("=== Batch Processing Complete ===")
+    logger.info("Total files processed: %d", result.total_files)
+    logger.info("Successful: %d", result.successful_files)
+    logger.info("Failed: %d", result.failed_files)
+    logger.info("Total time: %.3f seconds", result.total_duration_seconds)
+    
+    if result.total_files > 0:
+        logger.info("Average time per file: %.3f seconds", 
+                   result.total_duration_seconds / result.total_files)
+    
+    if result.summary_path:
+        logger.info("Batch summary saved to: %s", result.summary_path)
+    
+    # Return error code if any files failed
+    return 1 if result.failed_files > 0 else 0
 
 
 if __name__ == "__main__":

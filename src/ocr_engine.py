@@ -37,42 +37,61 @@ class TextDetection:
 
 
 class OCREngine:
-    """PaddleOCR-based text recognition engine for QC form processing."""
+    """PaddleOCR-based text recognition engine for QC form processing.
+    
+    Can be used as a context manager for automatic resource cleanup:
+        with OCREngine(settings, logger) as engine:
+            result = engine.process(image_path)
+    """
 
     def __init__(self, settings: Settings, logger: logging.Logger) -> None:
         self._settings = settings
         self._logger = logger
-        self._ocr_engine: Optional[PaddleOCR] = None
+        # Initialize OCR engine immediately (eager initialization)
+        self._ocr_engine = self._initialize_ocr()
+
+    def __enter__(self) -> 'OCREngine':
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit with automatic cleanup."""
+        self.close()
+
+    def close(self) -> None:
+        """Clean up OCR engine resources."""
+        if self._ocr_engine is not None:
+            self._logger.debug("Releasing OCR engine resources")
+            self._ocr_engine = None
 
     def _initialize_ocr(self) -> PaddleOCR:
         """Initialize PaddleOCR engine with configured settings."""
-        if self._ocr_engine is None:
-            self._logger.info("Initializing PaddleOCR engine...")
-            # Initialize PaddleOCR with basic parameters - start simple
-            ocr_params = {
-                'use_angle_cls': True,  # Enable text angle classification
-                'lang': 'ru',  # Russian language support
-                'show_log': False,  # Suppress PaddleOCR internal logging
-            }
+        self._logger.info("Initializing PaddleOCR engine...")
+        # Initialize PaddleOCR with basic parameters - start simple
+        ocr_params = {
+            'use_angle_cls': True,  # Enable text angle classification
+            'lang': 'ru',  # Russian language support
+            'show_log': False,  # Suppress PaddleOCR internal logging
+        }
+        
+        # Add GPU parameter only if enabled
+        if self._settings.ocr_use_gpu:
+            ocr_params['use_gpu'] = True
             
-            # Add GPU parameter only if enabled
-            if self._settings.ocr_use_gpu:
-                ocr_params['use_gpu'] = True
-                
+        try:
+            ocr_engine = PaddleOCR(**ocr_params)
+        except Exception as e:
+            # Try with minimal parameters if advanced ones fail
+            self._logger.warning("Failed to initialize with advanced parameters: %s", e)
+            self._logger.info("Falling back to minimal PaddleOCR initialization...")
             try:
-                self._ocr_engine = PaddleOCR(**ocr_params)
-            except Exception as e:
-                # Try with minimal parameters if advanced ones fail
-                self._logger.warning("Failed to initialize with advanced parameters: %s", e)
-                self._logger.info("Falling back to minimal PaddleOCR initialization...")
-                try:
-                    self._ocr_engine = PaddleOCR(lang='ru')
-                except Exception as e2:
-                    self._logger.error("Failed to initialize PaddleOCR even with minimal parameters: %s", e2)
-                    # Try with no parameters at all
-                    self._ocr_engine = PaddleOCR()
-            self._logger.info("PaddleOCR engine initialized successfully")
-        return self._ocr_engine
+                ocr_engine = PaddleOCR(lang='ru')
+            except Exception as e2:
+                self._logger.error("Failed to initialize PaddleOCR even with minimal parameters: %s", e2)
+                # Try with no parameters at all
+                ocr_engine = PaddleOCR()
+        self._logger.info("PaddleOCR engine initialized successfully")
+        return ocr_engine
 
     def process(self, input_path: Path, output_path: Optional[Path] = None) -> OCRResult:
         """Run OCR processing on image and save results to JSON."""
@@ -82,18 +101,15 @@ class OCREngine:
         image = self._load_image(input_path)
         self._logger.debug("Loaded image '%s' with shape %s", input_path, image.shape)
         
-        # Initialize OCR engine
-        ocr_engine = self._initialize_ocr()
-        
-        # Perform OCR
+        # Perform OCR using pre-initialized engine
         self._logger.info("Starting OCR text recognition...")
         try:
-            ocr_results = ocr_engine.ocr(str(input_path), cls=True)
+            ocr_results = self._ocr_engine.ocr(str(input_path), cls=True)
         except TypeError as e:
             if 'cls' in str(e):
                 # Fallback to OCR without cls parameter
                 self._logger.debug("OCR cls parameter not supported, trying without it")
-                ocr_results = ocr_engine.ocr(str(input_path))
+                ocr_results = self._ocr_engine.ocr(str(input_path))
             else:
                 raise
         
