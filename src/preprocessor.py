@@ -234,21 +234,49 @@ class ImagePreprocessor:
         return binary
 
     def _scale_image(self, image: np.ndarray) -> np.ndarray:
-        """Scale image according to configuration."""
-        scale_factor = self._settings.image_scale_factor
-        if scale_factor == 1.0:
-            return image
-
-        interpolation = cv2.INTER_CUBIC if scale_factor > 1.0 else cv2.INTER_AREA
+        """Scale image adaptively based on megapixels to optimize OCR."""
         height, width = image.shape[:2]
+        original_mp = (width * height) / 1_000_000
+        
+        # Skip scaling if already high resolution
+        if original_mp >= self._settings.adaptive_scaling_min_mp:
+            self._logger.debug(
+                "Skipping scaling: image has %.2f MP (≥%.1f MP threshold)",
+                original_mp,
+                self._settings.adaptive_scaling_min_mp
+            )
+            return image
+        
+        # Target ~8 MP with max dimensions 3500×2500
+        target_mp = self._settings.adaptive_scaling_target_mp
+        max_width = self._settings.adaptive_scaling_max_width
+        max_height = self._settings.adaptive_scaling_max_height
+        
+        # Calculate scale factor based on megapixels
+        scale_factor = (target_mp / original_mp) ** 0.5
+        
+        # Calculate new dimensions
         new_width = int(width * scale_factor)
         new_height = int(height * scale_factor)
+        
+        # Ensure we don't exceed max dimensions (maintain aspect ratio)
+        if new_width > max_width:
+            scale_factor = max_width / width
+            new_width = max_width
+            new_height = int(height * scale_factor)
+        
+        if new_height > max_height:
+            scale_factor = max_height / height
+            new_height = max_height
+            new_width = int(width * scale_factor)
+        
+        final_mp = (new_width * new_height) / 1_000_000
+        
         self._logger.debug(
-            "Scaling image from (%d, %d) to (%d, %d)",
-            width,
-            height,
-            new_width,
-            new_height,
+            "Adaptive scaling: %.2f MP → %.2f MP, (%d×%d) → (%d×%d), factor=%.2f",
+            original_mp, final_mp, width, height, new_width, new_height, scale_factor
         )
+        
+        interpolation = cv2.INTER_CUBIC
         return cv2.resize(image, (new_width, new_height), interpolation=interpolation)
 

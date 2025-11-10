@@ -18,7 +18,11 @@ class Settings(BaseSettings):
     ocr_language: str = "ru"
     ocr_confidence_threshold: float = 0.5
     ocr_use_gpu: bool = False
-    image_scale_factor: float = 2.0
+    enable_adaptive_scaling: bool = True
+    adaptive_scaling_min_mp: float = 5.0
+    adaptive_scaling_target_mp: float = 8.0
+    adaptive_scaling_max_width: int = 3500
+    adaptive_scaling_max_height: int = 2500
     enable_deskew: bool = True
     enable_denoising: bool = True
     processed_suffix: str = "-cor"
