@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import time
@@ -67,7 +68,8 @@ class OCREngine:
     def _initialize_ocr(self) -> PaddleOCR:
         """Initialize PaddleOCR engine with configured settings."""
         self._logger.info("Initializing PaddleOCR engine...")
-        # Initialize PaddleOCR with basic parameters - start simple
+        
+        # Build desired parameters
         ocr_params = {
             'use_angle_cls': True,  # Enable text angle classification
             'lang': 'ru',  # Russian language support
@@ -77,6 +79,33 @@ class OCREngine:
         # Add GPU parameter only if enabled
         if self._settings.ocr_use_gpu:
             ocr_params['use_gpu'] = True
+        
+        # Filter out unsupported parameters by checking PaddleOCR.__init__ signature
+        try:
+            sig = inspect.signature(PaddleOCR.__init__)
+            supported_params = set(sig.parameters.keys())
+            
+            # Filter params to only include supported ones
+            filtered_params = {}
+            skipped_params = []
+            
+            for key, value in ocr_params.items():
+                if key in supported_params:
+                    filtered_params[key] = value
+                else:
+                    skipped_params.append(key)
+            
+            # Log skipped parameters for debugging
+            if skipped_params:
+                self._logger.debug(
+                    "Skipping unsupported PaddleOCR parameters: %s", 
+                    ", ".join(skipped_params)
+                )
+            
+            ocr_params = filtered_params
+            
+        except Exception as e:
+            self._logger.debug("Could not inspect PaddleOCR signature: %s. Using all parameters.", e)
             
         try:
             ocr_engine = PaddleOCR(**ocr_params)
