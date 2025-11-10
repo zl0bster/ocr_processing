@@ -15,14 +15,20 @@ class Settings(BaseSettings):
     log_dir: Path = Path("logs")
     log_level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"
     log_max_size_mb: int = 10
+    log_ocr_verbose: bool = False  # Enable verbose OCR debugging
+    save_ocr_debug_files: bool = False  # Save intermediate OCR files for debugging
     ocr_language: str = "ru"
     ocr_confidence_threshold: float = 0.5
     ocr_use_gpu: bool = False
     enable_adaptive_scaling: bool = True
     adaptive_scaling_min_mp: float = 5.0
-    adaptive_scaling_target_mp: float = 8.0
-    adaptive_scaling_max_width: int = 3500
-    adaptive_scaling_max_height: int = 2500
+    adaptive_scaling_target_mp: float = 6.0  # Снижено с 8.0 для стабильности OCR
+    adaptive_scaling_max_width: int = 3000   # Снижено с 3500 (рекомендация PaddleOCR)
+    adaptive_scaling_max_height: int = 2000  # Снижено с 2500 для соотношения сторон
+    # OCR safety limits
+    ocr_max_image_dimension: int = 3000  # Max dimension (width or height) for OCR processing
+    ocr_det_limit_side_len: int = 2000   # PaddleOCR detection limit
+    ocr_memory_reload_threshold_mb: int = 800  # Reload OCR engine if memory exceeds this (MB)
     enable_deskew: bool = True
     enable_denoising: bool = True
     processed_suffix: str = "-cor"

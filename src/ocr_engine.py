@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import inspect
 import json
 import logging
@@ -13,6 +14,7 @@ import numpy as np
 from paddleocr import PaddleOCR
 
 from config.settings import Settings
+from utils.memory_monitor import MemoryMonitor
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ class OCREngine:
     def __init__(self, settings: Settings, logger: logging.Logger) -> None:
         self._settings = settings
         self._logger = logger
+        self._memory_monitor = MemoryMonitor(logger)
         # Initialize OCR engine immediately (eager initialization)
         self._ocr_engine = self._initialize_ocr()
 
@@ -74,6 +77,8 @@ class OCREngine:
             'use_angle_cls': True,  # Enable text angle classification
             'lang': 'ru',  # Russian language support
             'show_log': False,  # Suppress PaddleOCR internal logging
+            'det_limit_side_len': self._settings.ocr_det_limit_side_len,  # Limit detection size
+            'det_limit_type': 'max',  # Maximum dimension limit
         }
         
         # Add GPU parameter only if enabled
@@ -122,25 +127,149 @@ class OCREngine:
         self._logger.info("PaddleOCR engine initialized successfully")
         return ocr_engine
 
+    def _prepare_image_for_ocr(self, image_path: Path) -> Tuple[np.ndarray, bool]:
+        """Load image and ensure it's not too large for OCR processing.
+        
+        Args:
+            image_path: Path to image file
+            
+        Returns:
+            Tuple of (processed_image, was_downscaled)
+        """
+        # Load image
+        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError(f"Unable to read image '{image_path}'")
+        
+        height, width = image.shape[:2]
+        max_dimension = self._settings.ocr_max_image_dimension
+        
+        self._logger.debug(
+            "Image dimensions: %dx%d pixels (%.2f MP)",
+            width, height, (width * height) / 1_000_000
+        )
+        
+        # Дополнительная диагностика изображения
+        self._logger.debug("Image color space: %s", "COLOR" if len(image.shape) == 3 else "GRAYSCALE")
+        if len(image.shape) == 3:
+            self._logger.debug("Image channels: %d", image.shape[2])
+        self._logger.debug("Image dtype: %s", image.dtype)
+        self._logger.debug("Image value range: min=%d, max=%d", image.min(), image.max())
+        
+        # Check if downscaling is needed
+        if max(width, height) > max_dimension:
+            # Calculate scale to fit within max_dimension
+            scale = max_dimension / max(width, height)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            
+            self._logger.warning(
+                "Image too large for OCR (%dx%d). Downscaling to %dx%d (scale=%.3f) to prevent OOM/crash",
+                width, height, new_width, new_height, scale
+            )
+            
+            # Downscale using high-quality interpolation
+            image = cv2.resize(
+                image, 
+                (new_width, new_height), 
+                interpolation=cv2.INTER_AREA  # Best for downscaling
+            )
+            
+            self._logger.info(
+                "Image downscaled from %.2f MP to %.2f MP for OCR stability",
+                (width * height) / 1_000_000,
+                (new_width * new_height) / 1_000_000
+            )
+            
+            return image, True
+        
+        return image, False
+
     def process(self, input_path: Path, output_path: Optional[Path] = None) -> OCRResult:
         """Run OCR processing on image and save results to JSON."""
         start_time = time.perf_counter()
         
-        # Load and validate input image
-        image = self._load_image(input_path)
+        # Prepare image for OCR (with safety downscaling if needed)
+        image, was_downscaled = self._prepare_image_for_ocr(input_path)
         self._logger.debug("Loaded image '%s' with shape %s", input_path, image.shape)
         
+        if was_downscaled:
+            # Save downscaled image temporarily for OCR
+            temp_path = input_path.parent / f"{input_path.stem}_ocr_temp{input_path.suffix}"
+            cv2.imwrite(str(temp_path), image)
+            ocr_input_path = temp_path
+        else:
+            ocr_input_path = input_path
+        
         # Perform OCR using pre-initialized engine
-        self._logger.info("Starting OCR text recognition...")
+        self._logger.info("Starting OCR text recognition on image %dx%d...", 
+                         image.shape[1], image.shape[0])
+        
         try:
-            ocr_results = self._ocr_engine.ocr(str(input_path), cls=True)
-        except TypeError as e:
-            if 'cls' in str(e):
-                # Fallback to OCR without cls parameter
-                self._logger.debug("OCR cls parameter not supported, trying without it")
-                ocr_results = self._ocr_engine.ocr(str(input_path))
-            else:
-                raise
+            self._logger.debug("Calling PaddleOCR.ocr()...")
+            mem_before_ocr = self._memory_monitor.log_memory("before OCR", level="INFO")
+            
+            try:
+                ocr_results = self._ocr_engine.ocr(str(ocr_input_path), cls=True)
+            except TypeError as e:
+                if 'cls' in str(e):
+                    # Fallback to OCR without cls parameter
+                    self._logger.debug("OCR cls parameter not supported, trying without it")
+                    ocr_results = self._ocr_engine.ocr(str(ocr_input_path))
+                else:
+                    raise
+            
+            self._logger.debug("PaddleOCR.ocr() completed successfully")
+            mem_after_ocr = self._memory_monitor.log_memory_delta(
+                mem_before_ocr, 
+                "after OCR"
+            )
+            
+            # Диагностика структуры результатов OCR
+            self._logger.debug("=" * 60)
+            self._logger.debug("OCR RESULTS STRUCTURE ANALYSIS")
+            self._logger.debug("=" * 60)
+            self._logger.debug("ocr_results type: %s", type(ocr_results).__name__)
+            self._logger.debug("ocr_results is None: %s", ocr_results is None)
+            
+            if ocr_results:
+                self._logger.debug("ocr_results length: %d", len(ocr_results))
+                
+                for idx, page_result in enumerate(ocr_results):
+                    self._logger.debug("  Page %d type: %s", idx, type(page_result).__name__)
+                    self._logger.debug("  Page %d is None: %s", idx, page_result is None)
+                    
+                    if page_result:
+                        if isinstance(page_result, list):
+                            self._logger.debug("  Page %d length: %d items", idx, len(page_result))
+                            if len(page_result) > 0:
+                                self._logger.debug("    First item type: %s", type(page_result[0]).__name__)
+                                self._logger.debug("    First item preview: %s", str(page_result[0])[:200])
+                        elif hasattr(page_result, 'keys'):
+                            self._logger.debug("  Page %d keys: %s", idx, list(page_result.keys())[:10])
+                        elif hasattr(page_result, '__dict__'):
+                            self._logger.debug("  Page %d attributes: %s", idx, list(vars(page_result).keys())[:10])
+                    else:
+                        self._logger.warning("  Page %d is empty/None", idx)
+            
+            self._logger.debug("=" * 60)
+            
+        except Exception as e:
+            self._logger.error(
+                "PaddleOCR.ocr() failed with exception: %s", 
+                type(e).__name__, 
+                exc_info=True
+            )
+            raise
+        finally:
+            # Clean up temporary file if created
+            if was_downscaled and ocr_input_path.exists():
+                try:
+                    ocr_input_path.unlink()
+                    self._logger.debug("Removed temporary OCR file: %s", ocr_input_path)
+                except Exception as e:
+                    self._logger.warning("Failed to remove temporary file %s: %s", 
+                                        ocr_input_path, e)
         
         # Log OCR results summary
         self._logger.debug("OCR detected %d pages", len(ocr_results) if ocr_results else 0)
@@ -178,6 +307,10 @@ class OCREngine:
                 low_confidence_count, self._settings.ocr_confidence_threshold * 1.2
             )
         
+        # Force garbage collection after OCR
+        gc.collect()
+        self._memory_monitor.log_memory("after cleanup", level="DEBUG")
+        
         return OCRResult(
             output_path=destination,
             duration_seconds=duration,
@@ -201,12 +334,52 @@ class OCREngine:
         """Convert PaddleOCR results to structured TextDetection objects."""
         text_detections = []
         
-        if not ocr_results or not ocr_results[0]:
-            self._logger.warning("No text detected in image")
+        self._logger.debug("=" * 60)
+        self._logger.debug("PROCESSING OCR RESULTS")
+        self._logger.debug("=" * 60)
+        
+        # Валидация входных данных
+        if ocr_results is None:
+            self._logger.warning("OCR results is None")
             return text_detections
         
-        # Handle PaddleX OCRResult object
+        if not ocr_results:
+            self._logger.warning("OCR results is empty list")
+            return text_detections
+        
+        if len(ocr_results) == 0:
+            self._logger.warning("OCR results has length 0")
+            return text_detections
+        
+        self._logger.debug("OCR results has %d pages", len(ocr_results))
+        
+        # Проверка первой страницы
         ocr_result_obj = ocr_results[0]
+        
+        if ocr_result_obj is None:
+            self._logger.warning("First page (ocr_results[0]) is None")
+            return text_detections
+        
+        if not ocr_result_obj:
+            self._logger.warning("First page (ocr_results[0]) is empty/falsy")
+            return text_detections
+        
+        # Детальная диагностика первой страницы
+        self._logger.debug("First page type: %s", type(ocr_result_obj).__name__)
+        self._logger.debug("First page has 'json': %s", hasattr(ocr_result_obj, 'json'))
+        self._logger.debug("First page has 'keys': %s", hasattr(ocr_result_obj, 'keys'))
+        self._logger.debug("First page is list: %s", isinstance(ocr_result_obj, list))
+        self._logger.debug("First page is dict: %s", isinstance(ocr_result_obj, dict))
+        
+        if isinstance(ocr_result_obj, list):
+            self._logger.debug("First page list length: %d", len(ocr_result_obj))
+            if len(ocr_result_obj) > 0:
+                self._logger.debug("First item in list type: %s", type(ocr_result_obj[0]).__name__)
+                self._logger.debug("First item preview: %s", str(ocr_result_obj[0])[:300])
+        
+        if hasattr(ocr_result_obj, 'keys'):
+            available_keys = list(ocr_result_obj.keys())
+            self._logger.debug("Available keys: %s", available_keys)
         
         # Check if this is a PaddleX OCRResult object (dict-like)
         if hasattr(ocr_result_obj, 'json') and hasattr(ocr_result_obj, 'keys'):
@@ -281,17 +454,38 @@ class OCREngine:
         else:
             # Fallback to original processing for standard PaddleOCR format
             self._logger.info("Processing standard PaddleOCR format")
-            for line_result in ocr_result_obj:
+            self._logger.debug("Items to process: %d", len(ocr_result_obj))
+            
+            processed_count = 0
+            skipped_low_confidence = 0
+            skipped_errors = 0
+            
+            for idx, line_result in enumerate(ocr_result_obj):
                 try:
+                    self._logger.debug("  Processing line %d/%d", idx + 1, len(ocr_result_obj))
+                    self._logger.debug("    Line type: %s", type(line_result).__name__)
+                    self._logger.debug("    Line length: %d", len(line_result) if hasattr(line_result, '__len__') else 0)
+                    
                     if len(line_result) < 2:
+                        self._logger.warning("    Line %d has insufficient data (length=%d)", idx, len(line_result))
+                        skipped_errors += 1
                         continue
                         
                     bbox = line_result[0] 
                     text_info = line_result[1]
+                    
+                    self._logger.debug("    bbox type: %s, length: %d", type(bbox).__name__, len(bbox) if hasattr(bbox, '__len__') else 0)
+                    self._logger.debug("    text_info type: %s, length: %d", type(text_info).__name__, len(text_info) if hasattr(text_info, '__len__') else 0)
+                    
                     text = text_info[0] if text_info[0] else ""
                     confidence = float(text_info[1]) if text_info[1] else 0.0
                     
+                    self._logger.debug("    text: '%s', confidence: %.3f", text[:50], confidence)
+                    
                     if confidence < self._settings.ocr_confidence_threshold:
+                        self._logger.debug("    SKIPPED: confidence %.3f < threshold %.3f", 
+                                         confidence, self._settings.ocr_confidence_threshold)
+                        skipped_low_confidence += 1
                         continue
                     
                     center_x = int(sum(point[0] for point in bbox) / 4)
@@ -307,10 +501,22 @@ class OCREngine:
                     )
                     
                     text_detections.append(detection)
+                    processed_count += 1
+                    
+                    self._logger.debug("    ✓ ADDED to detections (total: %d)", processed_count)
                     
                 except (IndexError, ValueError, TypeError) as e:
-                    self._logger.warning("Failed to process OCR result: %s", e)
+                    self._logger.error("    ✗ ERROR processing line %d: %s", idx, e, exc_info=True)
+                    skipped_errors += 1
                     continue
+            
+            # Итоговая статистика
+            self._logger.info("Standard format processing summary:")
+            self._logger.info("  Total items: %d", len(ocr_result_obj))
+            self._logger.info("  Successfully processed: %d", processed_count)
+            self._logger.info("  Skipped (low confidence): %d", skipped_low_confidence)
+            self._logger.info("  Skipped (errors): %d", skipped_errors)
+            self._logger.info("  Final detections: %d", len(text_detections))
         
         return text_detections
 

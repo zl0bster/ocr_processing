@@ -637,10 +637,120 @@ python src/main.py --batch images/ --mode ocr
 # src/config/settings.py
 enable_adaptive_scaling: bool = True
 adaptive_scaling_min_mp: float = 5.0
-adaptive_scaling_target_mp: float = 8.0
-adaptive_scaling_max_width: int = 3500
-adaptive_scaling_max_height: int = 2500
+adaptive_scaling_target_mp: float = 6.0  # Снижено с 8.0 для стабильности OCR
+adaptive_scaling_max_width: int = 3000   # Снижено с 3500 (рекомендация PaddleOCR)
+adaptive_scaling_max_height: int = 2000  # Снижено с 2500
 ```
+
+### Ограничения размера для OCR
+
+**Проблема:** PaddleOCR имеет ограничения по максимальному размеру изображений (Out of Memory, segfault на больших изображениях).
+
+**Решение:** Многоуровневая защита от превышения размера:
+
+1. **Адаптивное масштабирование (preprocessing):**
+   - Ограничение целевого разрешения: 6 MP (было 8 MP)
+   - Максимальные размеры: 3000×2000 px (было 3500×2500 px)
+
+2. **Защитное downscaling (OCR engine):**
+   - Проверка размера перед OCR
+   - Если max(width, height) > 3000px → автоматическое уменьшение
+   - Сохранение соотношения сторон
+   - Использование INTER_AREA для качественного downscaling
+
+3. **Ограничения PaddleOCR:**
+   - `det_limit_side_len: 2000` - ограничение детекции текста
+   - `det_limit_type: max` - применение к максимальной стороне
+
+**Рекомендации PaddleOCR:**
+- Максимальный безопасный размер: 3000px по длинной стороне
+- Для очень больших изображений: batch processing по частям
+- Мониторинг памяти при обработке
+
+**Логирование:**
+- WARNING при downscaling изображения
+- DEBUG информация о размерах на каждом этапе
+- ERROR с полным stack trace при сбоях OCR
+
+**Конфигурация:**
+```python
+# src/config/settings.py
+ocr_max_image_dimension: int = 3000  # Max dimension for OCR
+ocr_det_limit_side_len: int = 2000   # PaddleOCR detection limit
+```
+
+### Детальное диагностическое логирование
+
+**Проблема:** При сбоях OCR недостаточно информации для диагностики - где и почему теряются данные.
+
+**Решение:** Многоуровневое детальное логирование на уровне DEBUG:
+
+1. **Анализ структуры результатов OCR:**
+   - Тип и размер данных на каждом уровне
+   - Типы элементов в списках и объектах
+   - Preview содержимого для быстрой диагностики
+
+2. **Валидация на каждом этапе:**
+   - Проверка None/empty перед обработкой
+   - Детальная диагностика первой страницы результатов
+   - Определение формата данных (PaddleX vs standard)
+
+3. **Детальная обработка каждого текста:**
+   - Логирование типов bbox и text_info
+   - Отслеживание причин пропуска (низкая уверенность/ошибки)
+   - Счетчики: обработано/пропущено/ошибок
+
+4. **Параметры изображений:**
+   - Размеры и megapixels
+   - Цветовое пространство и каналы
+   - Тип данных и диапазон значений
+
+5. **Итоговая статистика:**
+   - Количество обработанных элементов
+   - Количество пропущенных (по причинам)
+   - Финальное количество детекций
+
+**Включение детального логирования:**
+```bash
+# В .env или переменной окружения
+LOG_LEVEL=DEBUG
+LOG_OCR_VERBOSE=true  # Дополнительное OCR логирование (будущее)
+SAVE_OCR_DEBUG_FILES=true  # Сохранение промежуточных файлов (будущее)
+```
+
+**Пример вывода DEBUG лога:**
+```
+============================================================
+OCR RESULTS STRUCTURE ANALYSIS
+============================================================
+ocr_results type: list
+ocr_results length: 1
+  Page 0 type: list
+  Page 0 length: 15 items
+    First item type: list
+    First item preview: [[[x1,y1],[x2,y2]...], ['текст', 0.95]]
+============================================================
+PROCESSING OCR RESULTS
+============================================================
+First page list length: 15
+Processing standard PaddleOCR format
+Items to process: 15
+  Processing line 1/15
+    text: 'ГЕОМЕТРИЯ', confidence: 0.950
+    ✓ ADDED to detections (total: 1)
+Standard format processing summary:
+  Total items: 15
+  Successfully processed: 12
+  Skipped (low confidence): 2
+  Skipped (errors): 1
+  Final detections: 12
+```
+
+**Преимущества:**
+- Точная диагностика проблем парсинга OCR результатов
+- Понимание формата данных от PaddleOCR
+- Отслеживание потери данных на каждом этапе
+- Быстрое выявление проблем с уверенностью распознавания
 
 ## План разработки по итерациям
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import logging
 import time
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from error_corrector import ErrorCorrector
 from field_validator import FieldValidator
 from ocr_engine import OCREngine
 from preprocessor import ImagePreprocessor
+from utils.memory_monitor import MemoryMonitor
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ class BatchProcessor:
     def __init__(self, settings: Settings, logger: logging.Logger) -> None:
         self._settings = settings
         self._logger = logger
+        self._memory_monitor = MemoryMonitor(logger)
 
     def process_directory(
         self,
@@ -140,19 +143,57 @@ class BatchProcessor:
         return batch_result
 
     def _process_pipeline_batch(self, image_files: List[Path]) -> List[FileResult]:
-        """Process batch with full pipeline using shared OCR engine."""
+        """Process batch with full pipeline and automatic OCR engine reload."""
         file_results = []
+        
+        self._logger.info("=== Starting batch processing ===")
+        initial_memory = self._memory_monitor.log_memory("batch start", level="INFO")
         
         # Create shared components
         preprocessor = ImagePreprocessor(settings=self._settings, logger=self._logger)
         error_corrector = ErrorCorrector(settings=self._settings, logger=self._logger)
         field_validator = FieldValidator(settings=self._settings, logger=self._logger)
         
-        # Use shared OCR engine for all files
-        with OCREngine(settings=self._settings, logger=self._logger) as ocr_engine:
+        # Initialize OCR engine (will be reloaded if memory exceeds threshold)
+        ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
+        engine_reload_count = 0
+        
+        try:
             for image_file in image_files:
                 self._logger.info("Processing %s...", image_file.name)
                 file_start = time.perf_counter()
+                file_mem_start = self._memory_monitor.log_memory(
+                    f"before {image_file.name}", 
+                    level="DEBUG"
+                )
+                
+                # Check memory and reload OCR engine if necessary
+                current_memory_mb = self._memory_monitor.get_memory_mb()
+                if current_memory_mb > self._settings.ocr_memory_reload_threshold_mb:
+                    self._logger.warning(
+                        "Memory usage (%.1f MB) exceeds threshold (%d MB). "
+                        "Reloading OCR engine to free memory...",
+                        current_memory_mb,
+                        self._settings.ocr_memory_reload_threshold_mb
+                    )
+                    
+                    # Close old engine and create new one
+                    ocr_engine.close()
+                    gc.collect()
+                    mem_after_gc = self._memory_monitor.log_memory("after engine close + gc", level="INFO")
+                    
+                    ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
+                    engine_reload_count += 1
+                    mem_after_reload = self._memory_monitor.log_memory(
+                        f"after engine reload #{engine_reload_count}", 
+                        level="INFO"
+                    )
+                    self._logger.info(
+                        "OCR engine reloaded successfully (reload #%d). "
+                        "Memory freed: %.1f MB",
+                        engine_reload_count,
+                        current_memory_mb - mem_after_reload
+                    )
                 
                 try:
                     # Step 1: Preprocessing
@@ -164,16 +205,36 @@ class BatchProcessor:
                         self._logger.debug("  Deskew angle: %.3f degrees", preprocess_result.deskew_angle)
                     
                     # Step 2: OCR with shared engine
-                    ocr_result = ocr_engine.process(input_path=preprocess_result.output_path)
-                    self._logger.info("  Step 2/4: OCR completed in %.3f seconds. Output: %s",
-                                     ocr_result.duration_seconds,
-                                     ocr_result.output_path)
-                    self._logger.info("  Found %d text regions (avg confidence: %.3f)",
-                                     ocr_result.total_texts_found,
-                                     ocr_result.average_confidence)
-                    if ocr_result.low_confidence_count > 0:
-                        self._logger.warning("  %d text regions have low confidence",
-                                            ocr_result.low_confidence_count)
+                    try:
+                        ocr_result = ocr_engine.process(input_path=preprocess_result.output_path)
+                        self._logger.info("  Step 2/4: OCR completed in %.3f seconds. Output: %s",
+                                         ocr_result.duration_seconds,
+                                         ocr_result.output_path)
+                        self._logger.info("  Found %d text regions (avg confidence: %.3f)",
+                                         ocr_result.total_texts_found,
+                                         ocr_result.average_confidence)
+                        
+                        # Детальное логирование результатов OCR
+                        self._logger.debug("OCR result details:")
+                        self._logger.debug("  Output path: %s", ocr_result.output_path)
+                        self._logger.debug("  Duration: %.3f seconds", ocr_result.duration_seconds)
+                        self._logger.debug("  Texts found: %d", ocr_result.total_texts_found)
+                        self._logger.debug("  Avg confidence: %.3f", ocr_result.average_confidence)
+                        self._logger.debug("  Low confidence count: %d", ocr_result.low_confidence_count)
+                        
+                        if ocr_result.total_texts_found == 0:
+                            self._logger.warning("  ⚠ OCR found ZERO text regions - check preprocessing quality")
+                        
+                        if ocr_result.low_confidence_count > 0:
+                            self._logger.warning("  %d text regions have low confidence",
+                                                ocr_result.low_confidence_count)
+                    except Exception as ocr_error:
+                        self._logger.error(
+                            "  Step 2/4: OCR FAILED - %s: %s",
+                            type(ocr_error).__name__,
+                            str(ocr_error)
+                        )
+                        raise  # Re-raise to be caught by outer exception handler
                     
                     # Step 3: Error correction
                     correction_result = error_corrector.process(input_path=ocr_result.output_path)
@@ -214,6 +275,14 @@ class BatchProcessor:
                     self._logger.info("✓ %s completed in %.3f seconds", 
                                      image_file.name, file_duration)
                     
+                    # Log memory usage and cleanup
+                    self._memory_monitor.log_memory_delta(
+                        file_mem_start, 
+                        f"after {image_file.name}"
+                    )
+                    gc.collect()
+                    self._memory_monitor.log_memory("after gc.collect()", level="DEBUG")
+                    
                 except Exception as e:
                     file_duration = time.perf_counter() - file_start
                     error_msg = str(e)
@@ -226,18 +295,69 @@ class BatchProcessor:
                     ))
                     
                     self._logger.error("✗ %s failed: %s", image_file.name, error_msg)
+        finally:
+            # Clean up OCR engine at the end
+            if ocr_engine is not None:
+                ocr_engine.close()
+            
+            if engine_reload_count > 0:
+                self._logger.info(
+                    "Total OCR engine reloads during batch: %d",
+                    engine_reload_count
+                )
+        
+        # Final memory report
+        self._logger.info("=== Batch processing completed ===")
+        self._memory_monitor.log_memory_delta(initial_memory, "total batch")
         
         return file_results
 
     def _process_ocr_batch(self, image_files: List[Path]) -> List[FileResult]:
-        """Process batch with OCR only using shared engine."""
+        """Process batch with OCR only and automatic OCR engine reload."""
         file_results = []
         
-        # Use shared OCR engine for all files
-        with OCREngine(settings=self._settings, logger=self._logger) as ocr_engine:
+        initial_memory = self._memory_monitor.log_memory("OCR batch start", level="INFO")
+        
+        # Initialize OCR engine (will be reloaded if memory exceeds threshold)
+        ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
+        engine_reload_count = 0
+        
+        try:
             for image_file in image_files:
                 self._logger.info("Processing %s...", image_file.name)
                 file_start = time.perf_counter()
+                file_mem_start = self._memory_monitor.log_memory(
+                    f"before {image_file.name}", 
+                    level="DEBUG"
+                )
+                
+                # Check memory and reload OCR engine if necessary
+                current_memory_mb = self._memory_monitor.get_memory_mb()
+                if current_memory_mb > self._settings.ocr_memory_reload_threshold_mb:
+                    self._logger.warning(
+                        "Memory usage (%.1f MB) exceeds threshold (%d MB). "
+                        "Reloading OCR engine to free memory...",
+                        current_memory_mb,
+                        self._settings.ocr_memory_reload_threshold_mb
+                    )
+                    
+                    # Close old engine and create new one
+                    ocr_engine.close()
+                    gc.collect()
+                    mem_after_gc = self._memory_monitor.log_memory("after engine close + gc", level="INFO")
+                    
+                    ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
+                    engine_reload_count += 1
+                    mem_after_reload = self._memory_monitor.log_memory(
+                        f"after engine reload #{engine_reload_count}", 
+                        level="INFO"
+                    )
+                    self._logger.info(
+                        "OCR engine reloaded successfully (reload #%d). "
+                        "Memory freed: %.1f MB",
+                        engine_reload_count,
+                        current_memory_mb - mem_after_reload
+                    )
                 
                 try:
                     ocr_result = ocr_engine.process(input_path=image_file)
@@ -263,6 +383,14 @@ class BatchProcessor:
                     self._logger.info("✓ %s completed in %.3f seconds", 
                                      image_file.name, file_duration)
                     
+                    # Log memory usage and cleanup
+                    self._memory_monitor.log_memory_delta(
+                        file_mem_start, 
+                        f"after {image_file.name}"
+                    )
+                    gc.collect()
+                    self._memory_monitor.log_memory("after gc.collect()", level="DEBUG")
+                    
                 except Exception as e:
                     file_duration = time.perf_counter() - file_start
                     error_msg = str(e)
@@ -275,6 +403,19 @@ class BatchProcessor:
                     ))
                     
                     self._logger.error("✗ %s failed: %s", image_file.name, error_msg)
+        finally:
+            # Clean up OCR engine at the end
+            if ocr_engine is not None:
+                ocr_engine.close()
+            
+            if engine_reload_count > 0:
+                self._logger.info(
+                    "Total OCR engine reloads during batch: %d",
+                    engine_reload_count
+                )
+        
+        # Final memory report
+        self._memory_monitor.log_memory_delta(initial_memory, "OCR batch total")
         
         return file_results
 
@@ -283,9 +424,15 @@ class BatchProcessor:
         file_results = []
         preprocessor = ImagePreprocessor(settings=self._settings, logger=self._logger)
         
+        initial_memory = self._memory_monitor.log_memory("Preprocess batch start", level="INFO")
+        
         for image_file in image_files:
             self._logger.info("Processing %s...", image_file.name)
             file_start = time.perf_counter()
+            file_mem_start = self._memory_monitor.log_memory(
+                f"before {image_file.name}", 
+                level="DEBUG"
+            )
             
             try:
                 preprocess_result = preprocessor.process(input_path=image_file)
@@ -305,6 +452,14 @@ class BatchProcessor:
                 self._logger.info("✓ %s completed in %.3f seconds", 
                                  image_file.name, file_duration)
                 
+                # Log memory usage and cleanup
+                self._memory_monitor.log_memory_delta(
+                    file_mem_start, 
+                    f"after {image_file.name}"
+                )
+                gc.collect()
+                self._memory_monitor.log_memory("after gc.collect()", level="DEBUG")
+                
             except Exception as e:
                 file_duration = time.perf_counter() - file_start
                 error_msg = str(e)
@@ -318,6 +473,9 @@ class BatchProcessor:
                 
                 self._logger.error("✗ %s failed: %s", image_file.name, error_msg)
         
+        # Final memory report
+        self._memory_monitor.log_memory_delta(initial_memory, "Preprocess batch total")
+        
         return file_results
 
     def _process_correction_batch(self, image_files: List[Path]) -> List[FileResult]:
@@ -326,9 +484,15 @@ class BatchProcessor:
         error_corrector = ErrorCorrector(settings=self._settings, logger=self._logger)
         field_validator = FieldValidator(settings=self._settings, logger=self._logger)
         
+        initial_memory = self._memory_monitor.log_memory("Correction batch start", level="INFO")
+        
         for image_file in image_files:
             self._logger.info("Processing %s...", image_file.name)
             file_start = time.perf_counter()
+            file_mem_start = self._memory_monitor.log_memory(
+                f"before {image_file.name}", 
+                level="DEBUG"
+            )
             
             try:
                 correction_result = error_corrector.process(input_path=image_file)
@@ -358,6 +522,14 @@ class BatchProcessor:
                 self._logger.info("✓ %s completed in %.3f seconds", 
                                  image_file.name, file_duration)
                 
+                # Log memory usage and cleanup
+                self._memory_monitor.log_memory_delta(
+                    file_mem_start, 
+                    f"after {image_file.name}"
+                )
+                gc.collect()
+                self._memory_monitor.log_memory("after gc.collect()", level="DEBUG")
+                
             except Exception as e:
                 file_duration = time.perf_counter() - file_start
                 error_msg = str(e)
@@ -370,6 +542,9 @@ class BatchProcessor:
                 ))
                 
                 self._logger.error("✗ %s failed: %s", image_file.name, error_msg)
+        
+        # Final memory report
+        self._memory_monitor.log_memory_delta(initial_memory, "Correction batch total")
         
         return file_results
 
