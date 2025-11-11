@@ -21,14 +21,14 @@ class Settings(BaseSettings):
     ocr_confidence_threshold: float = 0.5
     ocr_use_gpu: bool = False
     enable_adaptive_scaling: bool = True
-    adaptive_scaling_min_mp: float = 5.0
-    adaptive_scaling_target_mp: float = 6.0  # Снижено с 8.0 для стабильности OCR
+    adaptive_scaling_min_mp: float = 4.0
+    adaptive_scaling_target_mp: float = 5.0  # Снижено с 6.0 для стабилизации OCR
     adaptive_scaling_max_width: int = 3000   # Снижено с 3500 (рекомендация PaddleOCR)
     adaptive_scaling_max_height: int = 2000  # Снижено с 2500 для соотношения сторон
     # OCR safety limits
     ocr_max_image_dimension: int = 3000  # Max dimension (width or height) for OCR processing
     ocr_det_limit_side_len: int = 2000   # PaddleOCR detection limit
-    ocr_memory_reload_threshold_mb: int = 800  # Reload OCR engine if memory exceeds this (MB)
+    ocr_memory_reload_threshold_mb: int = 700  # Reload OCR engine if memory exceeds this (MB)
     enable_deskew: bool = True
     enable_denoising: bool = True
     processed_suffix: str = "-cor"
@@ -37,11 +37,22 @@ class Settings(BaseSettings):
     gaussian_blur_kernel: int = 3
     enable_illumination_correction: bool = True
     illumination_kernel: int = 31
+    enable_region_detection: bool = True
+    region_detection_strategy: Literal["auto", "template", "adaptive", "text_based"] = "auto"
+    region_min_confidence: float = 0.7
+    region_max_width: int = 3000
+    region_max_height: int = 2000
+    region_horizontal_line_min_width_ratio: float = 0.7
+    region_template_file: Path = Path("config/templates/regions.json")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("input_dir", "output_dir", "log_dir", mode="before")
     def _ensure_path(cls, value: str | Path) -> Path:
+        return value if isinstance(value, Path) else Path(value)
+
+    @field_validator("region_template_file", mode="before")
+    def _ensure_region_template_path(cls, value: str | Path) -> Path:
         return value if isinstance(value, Path) else Path(value)
 
     @field_validator("gaussian_blur_kernel")

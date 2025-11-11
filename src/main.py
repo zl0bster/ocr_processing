@@ -8,12 +8,15 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
+import cv2
+
 from config.settings import Settings
 from preprocessor import ImagePreprocessor
 from ocr_engine import OCREngine
 from error_corrector import ErrorCorrector
 from field_validator import FieldValidator
 from batch_processor import BatchProcessor
+from region_detector import RegionDetector
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 
@@ -259,8 +262,25 @@ def _run_pipeline(input_path: Path, output_path: Optional[str], settings: Settin
     
     # Step 2: OCR on preprocessed image
     logger.info("Step 2: OCR text recognition...")
+    region_detector = RegionDetector(settings=settings, logger=logger)
+
+    preprocessed_image = cv2.imread(str(preprocess_result.output_path), cv2.IMREAD_COLOR)
+    if preprocessed_image is None:
+        raise ValueError(
+            f"Unable to read preprocessed image '{preprocess_result.output_path}'"
+        )
+
+    regions = region_detector.detect_zones(preprocessed_image)
+    logger.info(
+        "Region detector identified %d zones using method '%s'",
+        len(regions),
+        regions[0].detection_method if regions else "none",
+    )
     ocr_engine = OCREngine(settings=settings, logger=logger)
-    ocr_result = ocr_engine.process(input_path=preprocess_result.output_path)
+    ocr_result = ocr_engine.process_regions(
+        image_path=preprocess_result.output_path,
+        regions=regions,
+    )
     
     logger.info(
         "OCR processing completed in %.3f seconds. Output: %s",

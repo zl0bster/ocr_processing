@@ -14,6 +14,7 @@ import numpy as np
 from paddleocr import PaddleOCR
 
 from config.settings import Settings
+from region_detector import DocumentRegion, RegionDetector
 from utils.memory_monitor import MemoryMonitor
 
 
@@ -37,6 +38,9 @@ class TextDetection:
     bbox: List[List[int]]  # 4 corner points [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
     center_x: int
     center_y: int
+    region_id: Optional[str] = None
+    local_bbox: Optional[List[List[int]]] = None
+    local_center: Optional[Tuple[int, int]] = None
 
 
 class OCREngine:
@@ -127,196 +131,292 @@ class OCREngine:
         self._logger.info("PaddleOCR engine initialized successfully")
         return ocr_engine
 
-    def _prepare_image_for_ocr(self, image_path: Path) -> Tuple[np.ndarray, bool]:
-        """Load image and ensure it's not too large for OCR processing.
-        
-        Args:
-            image_path: Path to image file
-            
-        Returns:
-            Tuple of (processed_image, was_downscaled)
-        """
-        # Load image
-        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
-        if image is None:
-            raise ValueError(f"Unable to read image '{image_path}'")
-        
+    def _log_image_properties(self, image: np.ndarray) -> None:
+        """Log diagnostic information about the image."""
         height, width = image.shape[:2]
-        max_dimension = self._settings.ocr_max_image_dimension
-        
         self._logger.debug(
             "Image dimensions: %dx%d pixels (%.2f MP)",
-            width, height, (width * height) / 1_000_000
+            width,
+            height,
+            (width * height) / 1_000_000,
         )
-        
-        # Дополнительная диагностика изображения
-        self._logger.debug("Image color space: %s", "COLOR" if len(image.shape) == 3 else "GRAYSCALE")
-        if len(image.shape) == 3:
+        self._logger.debug(
+            "Image color space: %s", "COLOR" if image.ndim == 3 else "GRAYSCALE"
+        )
+        if image.ndim == 3:
             self._logger.debug("Image channels: %d", image.shape[2])
         self._logger.debug("Image dtype: %s", image.dtype)
         self._logger.debug("Image value range: min=%d, max=%d", image.min(), image.max())
-        
-        # Check if downscaling is needed
-        if max(width, height) > max_dimension:
-            # Calculate scale to fit within max_dimension
-            scale = max_dimension / max(width, height)
-            new_width = int(width * scale)
-            new_height = int(height * scale)
-            
-            self._logger.warning(
-                "Image too large for OCR (%dx%d). Downscaling to %dx%d (scale=%.3f) to prevent OOM/crash",
-                width, height, new_width, new_height, scale
+
+    def _resize_for_ocr(self, image: np.ndarray) -> Tuple[np.ndarray, float]:
+        """Resize image if it exceeds OCR safety limits."""
+        height, width = image.shape[:2]
+        max_dimension = self._settings.ocr_max_image_dimension
+        if max(width, height) <= max_dimension:
+            return image, 1.0
+
+        scale = max_dimension / float(max(width, height))
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+
+        self._logger.warning(
+            "Image too large for OCR (%dx%d). Downscaling to %dx%d (scale=%.3f) to prevent OOM/crash",
+            width,
+            height,
+            new_width,
+            new_height,
+            scale,
+        )
+
+        resized = cv2.resize(
+            image, (new_width, new_height), interpolation=cv2.INTER_AREA
+        )
+        self._logger.info(
+            "Image downscaled from %.2f MP to %.2f MP for OCR stability",
+            (width * height) / 1_000_000,
+            (new_width * new_height) / 1_000_000,
+        )
+        return resized, scale
+
+    def _run_paddle_ocr(self, image: np.ndarray) -> List[Any]:
+        """Execute PaddleOCR on the provided image array."""
+        self._logger.info(
+            "Starting OCR text recognition on image %dx%d...",
+            image.shape[1],
+            image.shape[0],
+        )
+        mem_before_ocr = self._memory_monitor.log_memory("before OCR", level="INFO")
+
+        try:
+            self._logger.debug("Calling PaddleOCR.ocr()...")
+            try:
+                ocr_results = self._ocr_engine.ocr(image, cls=True)
+            except TypeError as err:
+                if "cls" in str(err):
+                    self._logger.debug(
+                        "OCR cls parameter not supported, trying without it"
+                    )
+                    ocr_results = self._ocr_engine.ocr(image)
+                else:
+                    raise
+            self._logger.debug("PaddleOCR.ocr() completed successfully")
+        except Exception as exc:  # pragma: no cover - passthrough for logging
+            self._logger.error(
+                "PaddleOCR.ocr() failed with exception: %s",
+                type(exc).__name__,
+                exc_info=True,
             )
-            
-            # Downscale using high-quality interpolation
-            image = cv2.resize(
-                image, 
-                (new_width, new_height), 
-                interpolation=cv2.INTER_AREA  # Best for downscaling
-            )
-            
-            self._logger.info(
-                "Image downscaled from %.2f MP to %.2f MP for OCR stability",
-                (width * height) / 1_000_000,
-                (new_width * new_height) / 1_000_000
-            )
-            
-            return image, True
-        
-        return image, False
+            raise
+        finally:
+            self._memory_monitor.log_memory_delta(mem_before_ocr, "after OCR")
+
+        return ocr_results
+
+    def _log_ocr_structure(self, ocr_results: List[Any]) -> None:
+        """Log diagnostic information about PaddleOCR output."""
+        self._logger.debug("=" * 60)
+        self._logger.debug("OCR RESULTS STRUCTURE ANALYSIS")
+        self._logger.debug("=" * 60)
+        self._logger.debug("ocr_results type: %s", type(ocr_results).__name__)
+        self._logger.debug("ocr_results is None: %s", ocr_results is None)
+
+        if ocr_results:
+            self._logger.debug("ocr_results length: %d", len(ocr_results))
+
+            for idx, page_result in enumerate(ocr_results):
+                self._logger.debug("  Page %d type: %s", idx, type(page_result).__name__)
+                self._logger.debug("  Page %d is None: %s", idx, page_result is None)
+
+                if page_result:
+                    if isinstance(page_result, list):
+                        self._logger.debug(
+                            "  Page %d length: %d items", idx, len(page_result)
+                        )
+                        if len(page_result) > 0:
+                            self._logger.debug(
+                                "    First item type: %s",
+                                type(page_result[0]).__name__,
+                            )
+                            self._logger.debug(
+                                "    First item preview: %s",
+                                str(page_result[0])[:200],
+                            )
+                    elif hasattr(page_result, "keys"):
+                        self._logger.debug(
+                            "  Page %d keys: %s",
+                            list(page_result.keys())[:10],
+                        )
+                    elif hasattr(page_result, "__dict__"):
+                        self._logger.debug(
+                            "  Page %d attributes: %s",
+                            list(vars(page_result).keys())[:10],
+                        )
+                else:
+                    self._logger.warning("  Page %d is empty/None", idx)
+
+        self._logger.debug("=" * 60)
 
     def process(self, input_path: Path, output_path: Optional[Path] = None) -> OCRResult:
         """Run OCR processing on image and save results to JSON."""
         start_time = time.perf_counter()
         
-        # Prepare image for OCR (with safety downscaling if needed)
-        image, was_downscaled = self._prepare_image_for_ocr(input_path)
-        self._logger.debug("Loaded image '%s' with shape %s", input_path, image.shape)
-        
-        if was_downscaled:
-            # Save downscaled image temporarily for OCR
-            temp_path = input_path.parent / f"{input_path.stem}_ocr_temp{input_path.suffix}"
-            cv2.imwrite(str(temp_path), image)
-            ocr_input_path = temp_path
-        else:
-            ocr_input_path = input_path
-        
-        # Perform OCR using pre-initialized engine
-        self._logger.info("Starting OCR text recognition on image %dx%d...", 
-                         image.shape[1], image.shape[0])
-        
-        try:
-            self._logger.debug("Calling PaddleOCR.ocr()...")
-            mem_before_ocr = self._memory_monitor.log_memory("before OCR", level="INFO")
-            
-            try:
-                ocr_results = self._ocr_engine.ocr(str(ocr_input_path), cls=True)
-            except TypeError as e:
-                if 'cls' in str(e):
-                    # Fallback to OCR without cls parameter
-                    self._logger.debug("OCR cls parameter not supported, trying without it")
-                    ocr_results = self._ocr_engine.ocr(str(ocr_input_path))
-                else:
-                    raise
-            
-            self._logger.debug("PaddleOCR.ocr() completed successfully")
-            mem_after_ocr = self._memory_monitor.log_memory_delta(
-                mem_before_ocr, 
-                "after OCR"
-            )
-            
-            # Диагностика структуры результатов OCR
-            self._logger.debug("=" * 60)
-            self._logger.debug("OCR RESULTS STRUCTURE ANALYSIS")
-            self._logger.debug("=" * 60)
-            self._logger.debug("ocr_results type: %s", type(ocr_results).__name__)
-            self._logger.debug("ocr_results is None: %s", ocr_results is None)
-            
-            if ocr_results:
-                self._logger.debug("ocr_results length: %d", len(ocr_results))
-                
-                for idx, page_result in enumerate(ocr_results):
-                    self._logger.debug("  Page %d type: %s", idx, type(page_result).__name__)
-                    self._logger.debug("  Page %d is None: %s", idx, page_result is None)
-                    
-                    if page_result:
-                        if isinstance(page_result, list):
-                            self._logger.debug("  Page %d length: %d items", idx, len(page_result))
-                            if len(page_result) > 0:
-                                self._logger.debug("    First item type: %s", type(page_result[0]).__name__)
-                                self._logger.debug("    First item preview: %s", str(page_result[0])[:200])
-                        elif hasattr(page_result, 'keys'):
-                            self._logger.debug("  Page %d keys: %s", idx, list(page_result.keys())[:10])
-                        elif hasattr(page_result, '__dict__'):
-                            self._logger.debug("  Page %d attributes: %s", idx, list(vars(page_result).keys())[:10])
-                    else:
-                        self._logger.warning("  Page %d is empty/None", idx)
-            
-            self._logger.debug("=" * 60)
-            
-        except Exception as e:
-            self._logger.error(
-                "PaddleOCR.ocr() failed with exception: %s", 
-                type(e).__name__, 
-                exc_info=True
-            )
-            raise
-        finally:
-            # Clean up temporary file if created
-            if was_downscaled and ocr_input_path.exists():
-                try:
-                    ocr_input_path.unlink()
-                    self._logger.debug("Removed temporary OCR file: %s", ocr_input_path)
-                except Exception as e:
-                    self._logger.warning("Failed to remove temporary file %s: %s", 
-                                        ocr_input_path, e)
-        
-        # Log OCR results summary
-        self._logger.debug("OCR detected %d pages", len(ocr_results) if ocr_results else 0)
-        
-        # Process results
-        text_detections = self._process_ocr_results(ocr_results)
-        
-        # Create structured output
-        output_data = self._create_output_structure(input_path, text_detections, start_time)
-        
-        # Save to JSON
+        original_image = self._load_image(input_path)
+        self._log_image_properties(original_image)
+        prepared_image, scale_factor = self._resize_for_ocr(original_image)
+
+        ocr_results = self._run_paddle_ocr(prepared_image)
+        self._log_ocr_structure(ocr_results)
+
+        self._logger.debug(
+            "OCR detected %d pages", len(ocr_results) if ocr_results else 0
+        )
+
+        text_detections = self._process_ocr_results(
+            ocr_results, scale=scale_factor if scale_factor > 0 else 1.0
+        )
+
+        output_data = self._create_output_structure(
+            input_path, text_detections, start_time
+        )
+
         destination = output_path or self._build_output_path(input_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(destination, 'w', encoding='utf-8') as f:
+
+        with open(destination, "w", encoding="utf-8") as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
-        
+
         duration = time.perf_counter() - start_time
-        
-        # Calculate metrics
+
         avg_confidence = self._calculate_average_confidence(text_detections)
         low_confidence_count = sum(
-            1 for detection in text_detections 
+            1
+            for detection in text_detections
             if detection.confidence < self._settings.ocr_confidence_threshold * 1.2
         )
-        
+
         self._logger.info(
             "OCR processing completed in %.3f seconds. Found %d text regions (avg confidence: %.3f)",
-            duration, len(text_detections), avg_confidence
+            duration,
+            len(text_detections),
+            avg_confidence,
         )
-        
+
         if low_confidence_count > 0:
             self._logger.warning(
                 "%d text regions have low confidence (< %.2f)",
-                low_confidence_count, self._settings.ocr_confidence_threshold * 1.2
+                low_confidence_count,
+                self._settings.ocr_confidence_threshold * 1.2,
             )
-        
-        # Force garbage collection after OCR
+
         gc.collect()
         self._memory_monitor.log_memory("after cleanup", level="DEBUG")
-        
+
         return OCRResult(
             output_path=destination,
             duration_seconds=duration,
             total_texts_found=len(text_detections),
             average_confidence=avg_confidence,
-            low_confidence_count=low_confidence_count
+            low_confidence_count=low_confidence_count,
+        )
+
+    def process_regions(
+        self,
+        image_path: Path,
+        regions: List[DocumentRegion],
+        output_path: Optional[Path] = None,
+    ) -> OCRResult:
+        """Run OCR for each detected region and aggregate results."""
+        if not regions:
+            raise ValueError("Region list cannot be empty for process_regions()")
+
+        start_time = time.perf_counter()
+        base_image = self._load_image(image_path)
+        self._log_image_properties(base_image)
+
+        region_detector = RegionDetector(settings=self._settings, logger=self._logger)
+
+        aggregated_detections: List[TextDetection] = []
+        detections_by_region: Dict[str, List[TextDetection]] = {}
+
+        for region in regions:
+            self._logger.info(
+                "Processing region '%s' (y: %d-%d) detected via %s",
+                region.region_id,
+                region.y_start,
+                region.y_end,
+                region.detection_method,
+            )
+            region_image, region_scale = region_detector.extract_region(
+                base_image, region
+            )
+            prepared_region, ocr_scale = self._resize_for_ocr(region_image)
+            combined_scale = region_scale * ocr_scale
+
+            ocr_results = self._run_paddle_ocr(prepared_region)
+            self._log_ocr_structure(ocr_results)
+
+            region_detections = self._process_ocr_results(
+                ocr_results,
+                scale=combined_scale if combined_scale > 0 else 1.0,
+                offset_x=0,
+                offset_y=region.y_start,
+                region_id=region.region_id,
+            )
+
+            aggregated_detections.extend(region_detections)
+            detections_by_region[region.region_id] = region_detections
+            self._logger.info(
+                "Region '%s' yielded %d detections (avg confidence: %.3f)",
+                region.region_id,
+                len(region_detections),
+                self._calculate_average_confidence(region_detections),
+            )
+
+        output_data = self._create_output_structure(
+            image_path,
+            aggregated_detections,
+            start_time,
+            regions=regions,
+            grouped_detections=detections_by_region,
+        )
+
+        destination = output_path or self._build_output_path(image_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(destination, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, ensure_ascii=False, indent=2)
+
+        duration = time.perf_counter() - start_time
+        avg_confidence = self._calculate_average_confidence(aggregated_detections)
+        low_confidence_count = sum(
+            1
+            for detection in aggregated_detections
+            if detection.confidence < self._settings.ocr_confidence_threshold * 1.2
+        )
+
+        self._logger.info(
+            "Regional OCR processing completed in %.3f seconds. Total detections: %d (avg confidence: %.3f)",
+            duration,
+            len(aggregated_detections),
+            avg_confidence,
+        )
+
+        if low_confidence_count > 0:
+            self._logger.warning(
+                "%d detections across regions have low confidence (< %.2f)",
+                low_confidence_count,
+                self._settings.ocr_confidence_threshold * 1.2,
+            )
+
+        gc.collect()
+        self._memory_monitor.log_memory("after cleanup", level="DEBUG")
+
+        return OCRResult(
+            output_path=destination,
+            duration_seconds=duration,
+            total_texts_found=len(aggregated_detections),
+            average_confidence=avg_confidence,
+            low_confidence_count=low_confidence_count,
         )
 
     def _load_image(self, path: Path) -> np.ndarray:
@@ -330,13 +430,30 @@ class OCREngine:
         
         return image
 
-    def _process_ocr_results(self, ocr_results: List[Any]) -> List[TextDetection]:
+    def _process_ocr_results(
+        self,
+        ocr_results: List[Any],
+        *,
+        scale: float = 1.0,
+        offset_x: int = 0,
+        offset_y: int = 0,
+        region_id: Optional[str] = None,
+    ) -> List[TextDetection]:
         """Convert PaddleOCR results to structured TextDetection objects."""
         text_detections = []
+        inv_scale = 1.0 / scale if scale not in (0.0, 0) else 1.0
         
         self._logger.debug("=" * 60)
         self._logger.debug("PROCESSING OCR RESULTS")
         self._logger.debug("=" * 60)
+        self._logger.debug(
+            "Processing with scale=%.3f (inv_scale=%.3f), offsets x=%d, y=%d, region=%s",
+            scale,
+            inv_scale,
+            offset_x,
+            offset_y,
+            region_id,
+        )
         
         # Валидация входных данных
         if ocr_results is None:
@@ -409,8 +526,8 @@ class OCREngine:
                             continue
                         
                         # Convert numpy polygon to bbox format
-                        bbox = [[0, 0], [100, 0], [100, 50], [0, 50]]  # Default
-                        center_x = center_y = 0
+                        local_bbox = [[0, 0], [100, 0], [100, 50], [0, 50]]
+                        center_local_x = center_local_y = 0
                         
                         if poly is not None:
                             try:
@@ -421,27 +538,49 @@ class OCREngine:
                                     points = list(poly)
                                 
                                 if len(points) >= 4:
-                                    bbox = [[int(p[0]), int(p[1])] for p in points[:4]]
-                                    # Calculate center
-                                    center_x = int(sum(p[0] for p in points[:4]) / 4)
-                                    center_y = int(sum(p[1] for p in points[:4]) / 4)
+                                    local_bbox = [
+                                        [
+                                            int(p[0] * inv_scale),
+                                            int(p[1] * inv_scale),
+                                        ]
+                                        for p in points[:4]
+                                    ]
+                                    center_local_x = int(
+                                        sum(point[0] for point in local_bbox) / 4
+                                    )
+                                    center_local_y = int(
+                                        sum(point[1] for point in local_bbox) / 4
+                                    )
                                     
                             except Exception as e:
                                 self._logger.debug("Failed to process polygon %d: %s", i, e)
                         
+                        global_bbox = [
+                            [
+                                local_point[0] + offset_x,
+                                local_point[1] + offset_y,
+                            ]
+                            for local_point in local_bbox
+                        ]
                         detection = TextDetection(
                             text=text,
                             confidence=confidence,
-                            bbox=bbox,
-                            center_x=center_x,
-                            center_y=center_y
+                            bbox=global_bbox,
+                            center_x=center_local_x + offset_x,
+                            center_y=center_local_y + offset_y,
+                            region_id=region_id,
+                            local_bbox=local_bbox,
+                            local_center=(center_local_x, center_local_y),
                         )
                         
                         text_detections.append(detection)
                         
                         self._logger.debug(
                             "Detected text: '%s' (confidence: %.3f, center: %d,%d)",
-                            text, confidence, center_x, center_y
+                            text,
+                            confidence,
+                            detection.center_x,
+                            detection.center_y,
                         )
                         
                     except Exception as e:
@@ -488,16 +627,34 @@ class OCREngine:
                         skipped_low_confidence += 1
                         continue
                     
-                    center_x = int(sum(point[0] for point in bbox) / 4)
-                    center_y = int(sum(point[1] for point in bbox) / 4)
-                    bbox_int = [[int(point[0]), int(point[1])] for point in bbox]
+                    local_points = [
+                        [
+                            int(point[0] * inv_scale),
+                            int(point[1] * inv_scale),
+                        ]
+                        for point in bbox
+                    ]
+                    global_points = [
+                        [
+                            local_point[0] + offset_x,
+                            local_point[1] + offset_y,
+                        ]
+                        for local_point in local_points
+                    ]
+                    center_local_x = int(sum(point[0] for point in local_points) / 4)
+                    center_local_y = int(sum(point[1] for point in local_points) / 4)
+                    center_x = center_local_x + offset_x
+                    center_y = center_local_y + offset_y
                     
                     detection = TextDetection(
                         text=text,
                         confidence=confidence,
-                        bbox=bbox_int,
+                        bbox=global_points,
                         center_x=center_x,
-                        center_y=center_y
+                        center_y=center_y,
+                        region_id=region_id,
+                        local_bbox=local_points,
+                        local_center=(center_local_x, center_local_y),
                     )
                     
                     text_detections.append(detection)
@@ -520,16 +677,39 @@ class OCREngine:
         
         return text_detections
 
-    def _create_output_structure(self, input_path: Path, detections: List[TextDetection], start_time: float) -> Dict[str, Any]:
+    def _create_output_structure(
+        self,
+        input_path: Path,
+        detections: List[TextDetection],
+        start_time: float,
+        regions: Optional[List[DocumentRegion]] = None,
+        grouped_detections: Optional[Dict[str, List[TextDetection]]] = None,
+    ) -> Dict[str, Any]:
         """Create structured JSON output with metadata and text detections."""
         duration = time.perf_counter() - start_time
-        
-        return {
+
+        def _detection_to_dict(detection: TextDetection) -> Dict[str, Any]:
+            data: Dict[str, Any] = {
+                "text": detection.text,
+                "confidence": round(detection.confidence, 3),
+                "bbox": detection.bbox,
+                "center": [detection.center_x, detection.center_y],
+                "char_count": len(detection.text),
+            }
+            if detection.region_id:
+                data["region_id"] = detection.region_id
+            if detection.local_bbox:
+                data["bbox_region"] = detection.local_bbox
+            if detection.local_center:
+                data["center_region"] = list(detection.local_center)
+            return data
+
+        output: Dict[str, Any] = {
             "document_info": {
                 "source_file": input_path.name,
                 "processing_date": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "ocr_engine": "PaddleOCR",
-                "language": "ru"
+                "language": "ru",
             },
             "processing_metrics": {
                 "total_time_ms": int(duration * 1000),
@@ -537,21 +717,37 @@ class OCREngine:
                 "average_confidence": self._calculate_average_confidence(detections),
                 "low_confidence_threshold": self._settings.ocr_confidence_threshold,
                 "low_confidence_count": sum(
-                    1 for d in detections 
+                    1
+                    for d in detections
                     if d.confidence < self._settings.ocr_confidence_threshold * 1.2
-                )
+                ),
             },
-            "text_regions": [
-                {
-                    "text": detection.text,
-                    "confidence": round(detection.confidence, 3),
-                    "bbox": detection.bbox,
-                    "center": [detection.center_x, detection.center_y],
-                    "char_count": len(detection.text)
-                }
-                for detection in detections
-            ]
+            "text_regions": [_detection_to_dict(detection) for detection in detections],
         }
+
+        if regions:
+            output["regions_detected"] = [
+                {
+                    "region_id": region.region_id,
+                    "y_start_norm": region.y_start_norm,
+                    "y_end_norm": region.y_end_norm,
+                    "y_start": region.y_start,
+                    "y_end": region.y_end,
+                    "detection_method": region.detection_method,
+                    "confidence": round(region.confidence, 3),
+                }
+                for region in regions
+            ]
+
+        if grouped_detections:
+            grouped_output: Dict[str, List[Dict[str, Any]]] = {}
+            for region_key, region_detections in grouped_detections.items():
+                grouped_output[region_key] = [
+                    _detection_to_dict(detection) for detection in region_detections
+                ]
+            output["ocr_results_by_region"] = grouped_output
+
+        return output
 
     def _calculate_average_confidence(self, detections: List[TextDetection]) -> float:
         """Calculate average confidence score across all detections."""
