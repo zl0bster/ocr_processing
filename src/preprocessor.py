@@ -247,7 +247,7 @@ class ImagePreprocessor:
             )
             return image
         
-        # Target ~8 MP with max dimensions 3500×2500
+        # Target ~5 MP with max dimensions 3000×2000
         target_mp = self._settings.adaptive_scaling_target_mp
         max_width = self._settings.adaptive_scaling_max_width
         max_height = self._settings.adaptive_scaling_max_height
@@ -260,15 +260,13 @@ class ImagePreprocessor:
         new_height = int(height * scale_factor)
         
         # Ensure we don't exceed max dimensions (maintain aspect ratio)
-        if new_width > max_width:
-            scale_factor = max_width / width
-            new_width = max_width
-            new_height = int(height * scale_factor)
-        
-        if new_height > max_height:
-            scale_factor = max_height / height
-            new_height = max_height
-            new_width = int(width * scale_factor)
+        width_scale = max_width / new_width if new_width > max_width else 1.0
+        height_scale = max_height / new_height if new_height > max_height else 1.0
+
+        final_scale = min(width_scale, height_scale)
+        if final_scale < 1.0:
+            new_width = int(new_width * final_scale)
+            new_height = int(new_height * final_scale)
         
         final_mp = (new_width * new_height) / 1_000_000
         
