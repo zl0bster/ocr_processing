@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     region_max_height: int = 2000
     region_horizontal_line_min_width_ratio: float = 0.7
     region_template_file: Path = Path("config/templates/regions.json")
+    # Region detection constraints (all values are ratios 0.0-1.0)
+    region_min_header_ratio: float = 0.20  # Header: min 20% of image height
+    region_max_header_ratio: float = 0.25  # Header: max 25% of image height
+    region_min_defects_ratio: float = 0.30  # Defects: min 25% of image height
+    region_max_defects_ratio: float = 0.40  # Defects: max 40% of image height
+    region_adaptive_template_tolerance: float = 0.10  # Max 10% deviation from template
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

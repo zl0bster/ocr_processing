@@ -77,7 +77,7 @@ class RegionDetector:
 
         for method in detection_order:
             if method == "adaptive":
-                regions = self._detect_adaptive_lines(image)
+                regions = self._detect_adaptive_lines(image, template_name=template_name)
             elif method == "text_based":
                 regions = self._detect_text_projection(image)
             elif method == "template":
@@ -193,8 +193,10 @@ class RegionDetector:
 
         return regions
 
-    def _detect_adaptive_lines(self, image: np.ndarray) -> List[DocumentRegion]:
-        """Detect regions using horizontal line morphology."""
+    def _detect_adaptive_lines(
+        self, image: np.ndarray, template_name: Optional[str] = None
+    ) -> List[DocumentRegion]:
+        """Detect regions using horizontal line morphology with constraint validation."""
         gray = self._to_gray(image)
         binary = cv2.adaptiveThreshold(
             gray,
@@ -229,14 +231,234 @@ class RegionDetector:
             line_positions.append(y + h // 2)
 
         line_positions = self._merge_close_positions(line_positions, threshold=10)
-        if len(line_positions) < 2:
-            return []
+        self._logger.debug(
+            "Detected %d horizontal line candidates: %s",
+            len(line_positions),
+            [f"y={y} ({y/height:.1%})" for y in sorted(line_positions)],
+        )
 
-        line_positions = sorted(line_positions)[:2]
-        boundaries = [0, *line_positions, height]
-        return self._regions_from_boundaries(
+        # Filter lines for valid header boundaries
+        valid_header_lines = [
+            y for y in line_positions if self._validate_line_as_header_boundary(y, height)
+        ]
+
+        if not valid_header_lines:
+            self._logger.debug(
+                "No valid header boundaries found in detected lines. "
+                "Searching fallback range [%d, %d]",
+                int(height * self._settings.region_min_header_ratio),
+                int(height * self._settings.region_max_header_ratio),
+            )
+            # Try fallback search in expected header range
+            min_header_y = int(height * self._settings.region_min_header_ratio)
+            max_header_y = int(height * self._settings.region_max_header_ratio)
+            fallback_header = self._find_fallback_line_in_range(
+                gray, min_header_y, max_header_y
+            )
+            if fallback_header:
+                valid_header_lines = [fallback_header]
+                self._logger.debug(
+                    "Found fallback header boundary at y=%d (%.1f%%)",
+                    fallback_header,
+                    fallback_header / height * 100,
+                )
+            else:
+                self._logger.debug("Fallback header search failed. Returning empty.")
+                return []
+
+        # Select best header boundary (closest to middle of valid range)
+        header_mid = height * (
+            self._settings.region_min_header_ratio
+            + self._settings.region_max_header_ratio
+        ) / 2.0
+        header_boundary = min(
+            valid_header_lines, key=lambda y: abs(y - header_mid)
+        )
+        self._logger.debug(
+            "Selected header boundary at y=%d (%.1f%%)",
+            header_boundary,
+            header_boundary / height * 100,
+        )
+
+        # Find valid defects boundary below header
+        min_defects_y = header_boundary + int(
+            height * self._settings.region_min_defects_ratio
+        )
+        max_defects_y = header_boundary + int(
+            height * self._settings.region_max_defects_ratio
+        )
+        max_defects_y = min(max_defects_y, height - 1)
+
+        valid_defects_lines = [
+            y
+            for y in line_positions
+            if y > header_boundary
+            and self._validate_line_as_defects_boundary(y, header_boundary, height)
+        ]
+
+        if not valid_defects_lines:
+            self._logger.debug(
+                "No valid defects boundaries found. Searching fallback range [%d, %d]",
+                min_defects_y,
+                max_defects_y,
+            )
+            fallback_defects = self._find_fallback_line_in_range(
+                gray, min_defects_y, max_defects_y
+            )
+            if fallback_defects:
+                valid_defects_lines = [fallback_defects]
+                self._logger.debug(
+                    "Found fallback defects boundary at y=%d (%.1f%%)",
+                    fallback_defects,
+                    fallback_defects / height * 100,
+                )
+            else:
+                self._logger.debug("Fallback defects search failed. Returning empty.")
+                return []
+
+        # Select best defects boundary
+        defects_mid = (min_defects_y + max_defects_y) / 2.0
+        defects_boundary = min(
+            valid_defects_lines, key=lambda y: abs(y - defects_mid)
+        )
+        self._logger.debug(
+            "Selected defects boundary at y=%d (%.1f%%)",
+            defects_boundary,
+            defects_boundary / height * 100,
+        )
+
+        # Build boundaries and create regions
+        boundaries = [0, header_boundary, defects_boundary, height]
+        regions = self._regions_from_boundaries(
             boundaries, height, detection_method="adaptive", confidence=0.85
         )
+
+        # Cross-validate with template
+        if not self._cross_validate_with_template(regions, template_name):
+            self._logger.debug(
+                "Adaptive regions failed template cross-validation. Returning empty."
+            )
+            return []
+
+        self._logger.debug(
+            "Adaptive detection succeeded with regions: %s",
+            [
+                f"{r.region_id} y={r.y_start}-{r.y_end} ({r.y_start_norm:.1%}-{r.y_end_norm:.1%})"
+                for r in regions
+            ],
+        )
+
+        return regions
+
+    def _validate_line_as_header_boundary(
+        self, y_pos: int, height: int
+    ) -> bool:
+        """Check if line position is valid for header boundary."""
+        ratio = y_pos / float(height)
+        return (
+            self._settings.region_min_header_ratio
+            <= ratio
+            <= self._settings.region_max_header_ratio
+        )
+
+    def _validate_line_as_defects_boundary(
+        self, y_pos: int, header_end: int, height: int
+    ) -> bool:
+        """Check if line position creates valid defects region."""
+        defects_height = y_pos - header_end
+        defects_ratio = defects_height / float(height)
+        return (
+            self._settings.region_min_defects_ratio
+            <= defects_ratio
+            <= self._settings.region_max_defects_ratio
+        )
+
+    def _find_fallback_line_in_range(
+        self, gray: np.ndarray, min_y: int, max_y: int
+    ) -> Optional[int]:
+        """Search for horizontal line within specified Y range using projection."""
+        if min_y >= max_y or min_y < 0 or max_y > gray.shape[0]:
+            return None
+
+        # Extract region of interest
+        roi = gray[min_y:max_y, :]
+        if roi.size == 0:
+            return None
+
+        # Binarize the ROI
+        _, binary = cv2.threshold(
+            roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+
+        # Horizontal projection: sum of black pixels per row
+        projection = np.sum(binary == 0, axis=1).astype(np.float32)
+
+        if projection.size == 0:
+            return None
+
+        # Find row with minimum projection (likely a horizontal line/separator)
+        # Use a small window to smooth and find local minima
+        window = max(3, projection.size // 20)
+        if window > 1:
+            kernel = np.ones(window, dtype=np.float32) / float(window)
+            smoothed = np.convolve(projection, kernel, mode="same")
+        else:
+            smoothed = projection
+
+        # Find local minima (potential line positions)
+        # Look for rows with projection below median
+        threshold = np.percentile(smoothed, 30)
+        candidate_indices = np.where(smoothed <= threshold)[0]
+
+        if candidate_indices.size == 0:
+            return None
+
+        # Return the candidate closest to the middle of the range
+        mid_range = (max_y - min_y) // 2
+        best_idx = int(np.argmin(np.abs(candidate_indices - mid_range)))
+        return min_y + candidate_indices[best_idx]
+
+    def _cross_validate_with_template(
+        self,
+        regions: List[DocumentRegion],
+        template_name: Optional[str] = None,
+    ) -> bool:
+        """Validate adaptive regions against template expectations."""
+        template_key = template_name or self._settings.template_name
+        template = self._templates.get(template_key)
+        if not template:
+            return True  # No template to validate against
+
+        tolerance = self._settings.region_adaptive_template_tolerance
+
+        for adaptive_region in regions:
+            # Find matching template region
+            template_region = next(
+                (t for t in template if t["region_id"] == adaptive_region.region_id),
+                None,
+            )
+            if not template_region:
+                continue
+
+            # Check if normalized coords are within tolerance
+            expected_start = template_region["y_start_norm"]
+            expected_end = template_region["y_end_norm"]
+
+            start_deviation = abs(adaptive_region.y_start_norm - expected_start)
+            end_deviation = abs(adaptive_region.y_end_norm - expected_end)
+
+            if start_deviation > tolerance or end_deviation > tolerance:
+                self._logger.debug(
+                    "Region '%s' deviates from template: start=%.3f (expected %.3f), end=%.3f (expected %.3f)",
+                    adaptive_region.region_id,
+                    adaptive_region.y_start_norm,
+                    expected_start,
+                    adaptive_region.y_end_norm,
+                    expected_end,
+                )
+                return False
+
+        return True
 
     def _detect_text_projection(self, image: np.ndarray) -> List[DocumentRegion]:
         """Detect regions using horizontal projection profile."""
