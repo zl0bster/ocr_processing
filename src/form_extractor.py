@@ -217,6 +217,176 @@ class FormExtractor:
 
         return header
 
+    def _find_column_header(
+        self, keyword: str, detections: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Locate column header by keyword.
+
+        Args:
+            keyword: Header keyword to search for (e.g., "Номер", "Дата", "Рев")
+            detections: List of text detections from header region
+
+        Returns:
+            Detection dict with header text or None
+        """
+        keyword_lower = keyword.lower()
+        for det in detections:
+            text = det.get("text", "").strip()
+            if keyword_lower in text.lower():
+                return det
+        return None
+
+    def _find_texts_below_header(
+        self,
+        header_keyword: str,
+        detections: List[Dict[str, Any]],
+        max_distance_y: int = 100,
+        max_distance_x: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Find texts vertically below a header keyword.
+
+        Args:
+            header_keyword: Header keyword to search for
+            detections: List of text detections from header region
+            max_distance_y: Maximum vertical distance below header (pixels)
+            max_distance_x: Maximum horizontal offset from header center (pixels)
+
+        Returns:
+            List of detection dicts found below the header
+        """
+        header_det = self._find_column_header(header_keyword, detections)
+        if not header_det:
+            return []
+
+        header_x = header_det["center"][0]
+        header_y = header_det["center"][1]
+        header_y_bottom = max([p[1] for p in header_det["bbox"]])
+
+        candidates = []
+        for det in detections:
+            if det == header_det:
+                continue
+
+            det_y = det["center"][1]
+            det_x = det["center"][0]
+            det_y_top = min([p[1] for p in det["bbox"]])
+
+            # Check if text is below header (Y distance) and aligned (X distance)
+            y_distance = det_y_top - header_y_bottom
+            x_distance = abs(det_x - header_x)
+
+            if 0 < y_distance <= max_distance_y and x_distance <= max_distance_x:
+                candidates.append((det, y_distance))
+
+        # Sort by Y distance (closest first)
+        candidates.sort(key=lambda x: x[1])
+        return [det for det, _ in candidates]
+
+    def _find_texts_to_right(
+        self,
+        anchor_keyword: str,
+        detections: List[Dict[str, Any]],
+        y_tolerance: int = 30,
+        max_distance_x: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Find texts horizontally to the right of an anchor keyword.
+
+        Args:
+            anchor_keyword: Keyword to search for (e.g., "ПРОВЕРЕНО", "ГОДНО")
+            detections: List of text detections from header region
+            y_tolerance: Maximum vertical offset (pixels)
+            max_distance_x: Maximum horizontal distance to the right (pixels)
+
+        Returns:
+            List of detection dicts found to the right
+        """
+        anchor_lower = anchor_keyword.lower()
+        anchor_detections = [
+            d for d in detections if anchor_lower in d.get("text", "").lower()
+        ]
+
+        if not anchor_detections:
+            return []
+
+        candidates = []
+        for anchor_det in anchor_detections:
+            anchor_x = anchor_det["center"][0]
+            anchor_x_right = max([p[0] for p in anchor_det["bbox"]])
+            anchor_y = anchor_det["center"][1]
+
+            for det in detections:
+                if det == anchor_det:
+                    continue
+
+                det_x = det["center"][0]
+                det_x_left = min([p[0] for p in det["bbox"]])
+                det_y = det["center"][1]
+
+                # Check if text is to the right and on same line
+                x_distance = det_x_left - anchor_x_right
+                y_distance = abs(det_y - anchor_y)
+
+                if 0 < x_distance <= max_distance_x and y_distance <= y_tolerance:
+                    candidates.append((det, x_distance))
+
+        # Sort by X distance (closest first)
+        candidates.sort(key=lambda x: x[1])
+        return [det for det, _ in candidates]
+
+    def _assemble_date_from_parts(
+        self, date_texts: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        """Assemble date from multiple text elements.
+
+        Args:
+            date_texts: List of detection dicts containing date parts
+
+        Returns:
+            Assembled date string in DD/MM/YYYY format or None
+        """
+        if not date_texts:
+            return None
+
+        # Extract numeric parts and sort by X coordinate (left to right)
+        parts = []
+        for det in date_texts:
+            text = det.get("text", "").strip()
+            # Extract numbers from text
+            numbers = re.findall(r"\d+", text)
+            if numbers:
+                for num in numbers:
+                    parts.append((num, det["center"][0]))
+
+        if not parts:
+            return None
+
+        # Sort by X coordinate
+        parts.sort(key=lambda x: x[1])
+        numeric_parts = [part[0] for part in parts]
+
+        # Try to assemble date: expect DD, MM, YYYY or DD, MM, YY, YY
+        if len(numeric_parts) >= 3:
+            day = numeric_parts[0].zfill(2)
+            month = numeric_parts[1].zfill(2)
+
+            # Handle year: could be 4 digits or 2+2 digits
+            if len(numeric_parts) >= 4 and len(numeric_parts[2]) == 2:
+                year = numeric_parts[2] + numeric_parts[3]
+            elif len(numeric_parts[2]) == 4:
+                year = numeric_parts[2]
+            elif len(numeric_parts) >= 4:
+                year = numeric_parts[2] + numeric_parts[3]
+            else:
+                year = numeric_parts[2]
+
+            # Validate year length
+            if len(year) == 2:
+                year = "20" + year  # Assume 20XX for 2-digit years
+
+            return f"{day}/{month}/{year}"
+
+        return None
+
     def _detect_sticker_data(
         self, detections: List[Dict[str, Any]]
     ) -> Optional[StickerData]:
@@ -335,7 +505,7 @@ class FormExtractor:
     def _extract_act_number(
         self, detections: List[Dict[str, Any]]
     ) -> Optional[FieldValue]:
-        """Extract act number (XXX/YY) from top-right corner.
+        """Extract act number from below "Номер" header.
 
         Args:
             detections: List of text detections from header region
@@ -343,86 +513,118 @@ class FormExtractor:
         Returns:
             FieldValue with act number or None
         """
-        pattern = re.compile(r"(\d{3,4})\s*/\s*(\d{2})")
+        # Find texts below "Номер" header
+        texts_below = self._find_texts_below_header("Номер", detections, max_distance_y=100, max_distance_x=50)
 
-        # Filter top-right corner (x > 1200, y < 150)
-        candidates = [
-            d
-            for d in detections
-            if d["center"][0] > 1200 and d["center"][1] < 150
-        ]
+        if not texts_below:
+            return None
 
-        for det in candidates:
-            match = pattern.search(det.get("text", ""))
-            if match:
-                return FieldValue(
-                    value=f"{match.group(1)}/{match.group(2)}",
-                    confidence=det.get("confidence", 0.0),
-                    source="header",
-                    validated=True,
-                )
+        # Look for first numeric text
+        for det in texts_below:
+            text = det.get("text", "").strip()
+            # Check if it's a number (could be "030" or "030/25" format)
+            if re.match(r"^\d+", text):
+                # Extract the number part
+                match = re.search(r"^(\d+)", text)
+                if match:
+                    return FieldValue(
+                        value=match.group(1),
+                        confidence=det.get("confidence", 0.0),
+                        source="header",
+                        validated=True,
+                    )
 
         return None
 
     def _extract_act_date(
         self, detections: List[Dict[str, Any]]
     ) -> Optional[FieldValue]:
-        """Extract date in DD.MM.YYYY format.
+        """Extract date by assembling parts near "Дата" header.
 
         Args:
             detections: List of text detections from header region
 
         Returns:
-            FieldValue with date or None
+            FieldValue with date in DD/MM/YYYY format or None
         """
-        pattern = re.compile(r"(\d{1,2})[.\|](\d{1,2})[.\|]?(\d{4})")
+        # Find "Дата" header
+        date_header = self._find_column_header("Дата", detections)
+        if not date_header:
+            return None
 
-        # Look near act_number (top-right area)
-        candidates = [
-            d
-            for d in detections
-            if d["center"][0] > 1100 and d["center"][1] < 200
-        ]
+        header_x = date_header["center"][0]
+        header_x_right = max([p[0] for p in date_header["bbox"]])
+        header_y = date_header["center"][1]
 
-        for det in candidates:
-            match = pattern.search(det.get("text", ""))
-            if match:
-                day, month, year = match.groups()
-                return FieldValue(
-                    value=f"{day}.{month}.{year}",
-                    confidence=det.get("confidence", 0.0),
-                    source="header",
-                    validated=True,
-                )
+        # Find numeric texts near the "Дата" header (Y±50, X+50 to X+300)
+        date_parts = []
+        for det in detections:
+            if det == date_header:
+                continue
+
+            det_x = det["center"][0]
+            det_x_left = min([p[0] for p in det["bbox"]])
+            det_y = det["center"][1]
+            text = det.get("text", "").strip()
+
+            # Check if it's numeric and in the right area
+            if re.search(r"\d+", text):
+                x_distance = det_x_left - header_x_right
+                y_distance = abs(det_y - header_y)
+
+                if 0 < x_distance < 300 and y_distance < 50:
+                    date_parts.append(det)
+
+        if not date_parts:
+            return None
+
+        # Assemble date from parts
+        assembled_date = self._assemble_date_from_parts(date_parts)
+        if assembled_date:
+            # Calculate average confidence
+            avg_confidence = sum(d.get("confidence", 0.0) for d in date_parts) / len(date_parts)
+            return FieldValue(
+                value=assembled_date,
+                confidence=avg_confidence,
+                source="header",
+                validated=True,
+            )
 
         return None
 
     def _extract_template_revision(
         self, detections: List[Dict[str, Any]]
     ) -> Optional[FieldValue]:
-        """Extract template revision (e.g., A3, A4) from top-right corner.
+        """Extract template revision from below "Рев" header in upper right corner.
 
         Args:
             detections: List of text detections from header region
 
         Returns:
-            FieldValue with template revision or None
+            FieldValue with template revision (e.g., A3, A4) or None
         """
-        pattern = re.compile(r"([A-Z])\s*(\d+)")
+        # Find texts below "Рев" header
+        texts_below = self._find_texts_below_header("Рев", detections, max_distance_y=100, max_distance_x=50)
 
-        # Look in top-right corner, near "Рев" label
-        candidates = [
-            d
-            for d in detections
-            if d["center"][0] > 1400 and d["center"][1] < 100
-        ]
+        if not texts_below:
+            return None
 
-        for det in candidates:
+        # Look for first alphanumeric text (format: A3, A4, etc.)
+        for det in texts_below:
             text = det.get("text", "").strip()
-            match = pattern.search(text)
+            # Match pattern like "A3", "A4", "B1", etc.
+            match = re.search(r"([A-ZА-Я])\s*(\d+)", text)
             if match:
                 return FieldValue(
                     value=f"{match.group(1)}{match.group(2)}",
+                    confidence=det.get("confidence", 0.0),
+                    source="header",
+                    validated=True,
+                )
+            # Also try if text is already in correct format
+            if re.match(r"^[A-ZА-Я]\d+$", text):
+                return FieldValue(
+                    value=text,
                     confidence=det.get("confidence", 0.0),
                     source="header",
                     validated=True,
@@ -433,58 +635,95 @@ class FormExtractor:
     def _extract_quantity_field(
         self, detections: List[Dict[str, Any]], keyword: str
     ) -> Optional[FieldValue]:
-        """Extract numeric value near keyword.
+        """Extract numeric value from "КОЛ-ВО" column to the right of status keyword.
 
         Args:
             detections: List of text detections from header region
-            keyword: Keyword to search for (e.g., "проверено", "годно")
+            keyword: Keyword to search for (e.g., "проверено", "годно", "дефектами")
 
         Returns:
             FieldValue with quantity or None
         """
-        keyword_lower = keyword.lower()
+        # Map input keywords to status keywords
+        keyword_mapping = {
+            "проверено": "ПРОВЕРЕНО",
+            "годно": "ГОДНО",
+            "дефектами": "С ДЕФЕКТАМИ",
+        }
 
-        # Find detection with keyword
-        keyword_detections = [
+        keyword_lower = keyword.lower()
+        status_keyword = keyword_mapping.get(keyword_lower)
+
+        if not status_keyword:
+            # Fallback: use original keyword
+            status_keyword = keyword.upper()
+
+        # First, find "КОЛ-ВО" header to identify the column
+        kolvo_header = self._find_column_header("КОЛ-ВО", detections)
+        if not kolvo_header:
+            # Try alternative spelling
+            kolvo_header = self._find_column_header("кол-во", detections)
+
+        # Find status keyword detections
+        status_detections = [
             d
             for d in detections
-            if keyword_lower in d.get("text", "").lower()
+            if status_keyword.lower() in d.get("text", "").lower()
         ]
 
-        if not keyword_detections:
+        if not status_detections:
             return None
 
-        # Look for number in same detection or nearby
-        for keyword_det in keyword_detections:
-            text = keyword_det.get("text", "")
-            # Try to extract number from same text
-            match = re.search(r"(\d+)", text)
-            if match:
-                return FieldValue(
-                    value=match.group(1),
-                    confidence=keyword_det.get("confidence", 0.0),
-                    source="header",
-                )
+        # For each status keyword, find number to its right
+        for status_det in status_detections:
+            status_x = status_det["center"][0]
+            status_x_right = max([p[0] for p in status_det["bbox"]])
+            status_y = status_det["center"][1]
 
-            # Look for number in nearby detections (same Y, X+50 to X+200)
-            keyword_x = keyword_det["center"][0]
-            keyword_y = keyword_det["center"][1]
+            # Find texts to the right of this specific status detection
+            texts_to_right = []
+            for det in detections:
+                if det == status_det:
+                    continue
 
-            nearby = [
-                d
-                for d in detections
-                if abs(d["center"][1] - keyword_y) < 30
-                and keyword_x + 50 < d["center"][0] < keyword_x + 300
-            ]
+                det_x = det["center"][0]
+                det_x_left = min([p[0] for p in det["bbox"]])
+                det_y = det["center"][1]
 
-            for nearby_det in nearby:
-                match = re.search(r"^(\d+)$", nearby_det.get("text", "").strip())
+                # Check if text is to the right and on same line
+                x_distance = det_x_left - status_x_right
+                y_distance = abs(det_y - status_y)
+
+                if 0 < x_distance <= 200 and y_distance <= 30:
+                    texts_to_right.append((det, x_distance))
+
+            # Sort by X distance (closest first)
+            texts_to_right.sort(key=lambda x: x[1])
+
+            # Look for numeric text
+            for det, _ in texts_to_right:
+                text = det.get("text", "").strip()
+                # Check if it's a pure number
+                match = re.search(r"^(\d+)$", text)
                 if match:
-                    return FieldValue(
-                        value=match.group(1),
-                        confidence=nearby_det.get("confidence", 0.0),
-                        source="header",
-                    )
+                    # Verify it's in the "КОЛ-ВО" column area if we found the header
+                    if kolvo_header:
+                        kolvo_x = kolvo_header["center"][0]
+                        det_x = det["center"][0]
+                        # Check if number is roughly aligned with КОЛ-ВО column
+                        if abs(det_x - kolvo_x) < 100:
+                            return FieldValue(
+                                value=match.group(1),
+                                confidence=det.get("confidence", 0.0),
+                                source="header",
+                            )
+                    else:
+                        # If no КОЛ-ВО header found, just return the number
+                        return FieldValue(
+                            value=match.group(1),
+                            confidence=det.get("confidence", 0.0),
+                            source="header",
+                        )
 
         return None
 
@@ -542,7 +781,7 @@ class FormExtractor:
     def _extract_inspector_name(
         self, detections: List[Dict[str, Any]]
     ) -> Optional[FieldValue]:
-        """Extract inspector name near "КОНТРОЛЕР ОТК" label.
+        """Extract inspector name near "КОНТРОЛЕР ОТК" or "ФИО" label.
 
         Args:
             detections: List of text detections from header region
@@ -550,8 +789,8 @@ class FormExtractor:
         Returns:
             FieldValue with inspector name or None
         """
-        # Find "КОНТРОЛЕР ОТК" or similar
-        controller_keywords = ["контролер", "контролёр", "отк"]
+        # Find "КОНТРОЛЕР ОТК", "ФИО" or similar
+        controller_keywords = ["контролер", "контролёр", "отк", "фио"]
 
         controller_detections = [
             d
@@ -563,33 +802,54 @@ class FormExtractor:
             return None
 
         # Look for name below or to the right of controller label
+        candidates = []
         for controller_det in controller_detections:
             controller_x = controller_det["center"][0]
             controller_y = controller_det["center"][1]
+            controller_x_right = max([p[0] for p in controller_det["bbox"]])
 
-            # Look for text below (Y + 20 to Y + 100)
+            # Expanded search area: Y + 20 to Y + 150, X + 50 to X + 400
             nearby = [
                 d
                 for d in detections
-                if controller_y + 20 < d["center"][1] < controller_y + 100
-                and abs(d["center"][0] - controller_x) < 200
+                if controller_y + 20 < d["center"][1] < controller_y + 150
+                and (
+                    abs(d["center"][0] - controller_x) < 200  # Below
+                    or (controller_x_right + 50 < d["center"][0] < controller_x_right + 400)  # To the right
+                )
             ]
 
             for nearby_det in nearby:
                 text = nearby_det.get("text", "").strip()
+                confidence = nearby_det.get("confidence", 0.0)
 
-                # Name typically has 2-3 words
+                # Skip very short texts or pure numbers
+                if len(text) < 3 or text.isdigit():
+                    continue
+
+                # Accept texts with confidence > 0.5 (handwritten signatures may have lower confidence)
+                if confidence < 0.5:
+                    continue
+
+                # Name typically has 2-4 words
                 words = text.split()
                 if 2 <= len(words) <= 4:
-                    # Check if it looks like a name (has uppercase letters)
-                    if any(word and word[0].isupper() for word in words):
-                        return FieldValue(
-                            value=text,
-                            confidence=nearby_det.get("confidence", 0.0),
-                            source="header",
-                        )
+                    # Check if it looks like a name (has uppercase letters or mixed case)
+                    if any(word and (word[0].isupper() or word.isalpha()) for word in words):
+                        candidates.append((nearby_det, confidence))
 
-        return None
+        if not candidates:
+            return None
+
+        # Sort by confidence (highest first) and return best candidate
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_det, best_confidence = candidates[0]
+
+        return FieldValue(
+            value=best_det.get("text", "").strip(),
+            confidence=best_confidence,
+            source="header",
+        )
 
     def _extract_part_line_number(
         self, detections: List[Dict[str, Any]]
