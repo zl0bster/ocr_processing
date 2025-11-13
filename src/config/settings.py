@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     gaussian_blur_kernel: int = 3
     enable_illumination_correction: bool = True
     illumination_kernel: int = 31
+    adaptive_block_size: int = 31
+    adaptive_c: int = 7
+    use_morphological_enhancement: bool = True
+    gamma_correction: float = 0.7
     enable_region_detection: bool = True
     region_detection_strategy: Literal["auto", "template", "adaptive", "text_based"] = "auto"
     region_min_confidence: float = 0.7
@@ -77,5 +81,13 @@ class Settings(BaseSettings):
             raise ValueError("illumination_kernel must be odd")
         if value < 15:
             raise ValueError("illumination_kernel should be sufficiently large (>= 15)")
+        return value
+
+    @field_validator("adaptive_block_size")
+    def _ensure_adaptive_block_size(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("adaptive_block_size must be a positive integer")
+        if value % 2 == 0:
+            raise ValueError("adaptive_block_size must be odd")
         return value
 

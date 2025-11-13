@@ -175,6 +175,28 @@ class ImagePreprocessor:
         
         return True
 
+    def _enhance_pale_text(self, gray: np.ndarray) -> np.ndarray:
+        """Enhance contrast for pale handwritten text before binarization."""
+        # Morphological enhancement
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+        blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+        
+        enhanced = cv2.add(gray, tophat)
+        enhanced = cv2.subtract(enhanced, blackhat)
+        
+        # CLAHE for contrast
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(enhanced)
+        
+        # Gamma correction
+        if self._settings.gamma_correction < 1.0:
+            inv_gamma = 1.0 / self._settings.gamma_correction
+            table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype(np.uint8)
+            enhanced = cv2.LUT(enhanced, table)
+        
+        return enhanced
+
     def _enhance(self, image: np.ndarray) -> np.ndarray:
         """Improve image clarity for OCR processing."""
         scaled = self._scale_image(image)
@@ -193,6 +215,10 @@ class ImagePreprocessor:
             )
 
         gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
+
+        if self._settings.use_morphological_enhancement:
+            self._logger.debug("Applying morphological enhancement for pale text")
+            gray = self._enhance_pale_text(gray)
 
         if self._settings.enable_illumination_correction:
             kernel_size = self._settings.illumination_kernel
@@ -227,9 +253,12 @@ class ImagePreprocessor:
                 255,
                 cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                 cv2.THRESH_BINARY,
-                11,
-                2,
+                self._settings.adaptive_block_size,
+                self._settings.adaptive_c,
             )
+            # Morphological cleanup to connect broken strokes
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
         return binary
 
