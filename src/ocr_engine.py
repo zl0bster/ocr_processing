@@ -276,8 +276,9 @@ class OCREngine:
             ocr_results, scale=scale_factor if scale_factor > 0 else 1.0
         )
 
+        height, width = original_image.shape[:2]
         output_data = self._create_output_structure(
-            input_path, text_detections, start_time
+            input_path, text_detections, start_time, image_width=width, image_height=height
         )
 
         destination = output_path or self._build_output_path(input_path)
@@ -373,10 +374,13 @@ class OCREngine:
                 self._calculate_average_confidence(region_detections),
             )
 
+        height, width = base_image.shape[:2]
         output_data = self._create_output_structure(
             image_path,
             aggregated_detections,
             start_time,
+            image_width=width,
+            image_height=height,
             regions=regions,
             grouped_detections=detections_by_region,
         )
@@ -683,6 +687,8 @@ class OCREngine:
         input_path: Path,
         detections: List[TextDetection],
         start_time: float,
+        image_width: int,
+        image_height: int,
         regions: Optional[List[DocumentRegion]] = None,
         grouped_detections: Optional[Dict[str, List[TextDetection]]] = None,
     ) -> Dict[str, Any]:
@@ -711,6 +717,8 @@ class OCREngine:
                 "processing_date": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "ocr_engine": "PaddleOCR",
                 "language": "ru",
+                "image_width": image_width,
+                "image_height": image_height,
             },
             "processing_metrics": {
                 "total_time_ms": int(duration * 1000),

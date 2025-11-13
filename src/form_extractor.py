@@ -12,7 +12,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from config.settings import Settings
 from models.form_data import (
@@ -56,6 +56,8 @@ class FormExtractor:
             "control_type",
             "inspector_name",
         }
+        self._image_width: int = 2480  # Default fallback to typical A4 scan
+        self._image_height: int = 3508  # Default fallback to typical A4 scan
 
     def extract(
         self, ocr_json_path: Path, output_path: Optional[Path] = None
@@ -81,6 +83,9 @@ class FormExtractor:
                 "OCR results must contain 'ocr_results_by_region'. "
                 "Use OCREngine.process_regions() first."
             )
+
+        # Extract and store image dimensions
+        self._image_width, self._image_height = self._get_image_dimensions(ocr_data)
 
         regions_data = ocr_data["ocr_results_by_region"]
 
@@ -169,6 +174,64 @@ class FormExtractor:
             if field_value is not None:
                 count += 1
         return count
+
+    def _get_image_dimensions(self, ocr_data: Dict[str, Any]) -> Tuple[int, int]:
+        """Extract image dimensions from OCR data.
+
+        Args:
+            ocr_data: OCR results data dictionary
+
+        Returns:
+            Tuple of (width, height) in pixels
+        """
+        doc_info = ocr_data.get("document_info", {})
+        width = doc_info.get("image_width", 2480)  # Fallback to typical A4 scan
+        height = doc_info.get("image_height", 3508)  # Fallback to typical A4 scan
+        return width, height
+
+    def _pct_x(self, pixels: float) -> float:
+        """Convert X pixels to percentage of image width.
+
+        Args:
+            pixels: Pixel value
+
+        Returns:
+            Percentage value
+        """
+        return (pixels / self._image_width) * 100
+
+    def _pct_y(self, pixels: float) -> float:
+        """Convert Y pixels to percentage of image height.
+
+        Args:
+            pixels: Pixel value
+
+        Returns:
+            Percentage value
+        """
+        return (pixels / self._image_height) * 100
+
+    def _x_pixels(self, percent: float) -> int:
+        """Convert X percentage to pixels.
+
+        Args:
+            percent: Percentage value (e.g., 12.0 for 12%)
+
+        Returns:
+            Pixel value
+        """
+        return int((percent / 100) * self._image_width)
+
+    def _y_pixels(self, percent: float) -> int:
+        """Convert Y percentage to pixels.
+
+        Args:
+            percent: Percentage value (e.g., 2.0 for 2%)
+
+        Returns:
+            Pixel value
+        """
+        return int((percent / 100) * self._image_height)
 
     def _extract_header(self, header_texts: List[Dict[str, Any]]) -> HeaderData:
         """Extract header section data.
@@ -275,8 +338,10 @@ class FormExtractor:
             y_distance = det_y_top - header_y_bottom
             x_distance = abs(det_x - header_x)
 
-            if 0 < y_distance <= max_distance_y and x_distance <= max_distance_x:
-                candidates.append((det, y_distance))
+            # Allow small negative overlap (0.3% of image height ≈ 10px at 3500px)
+            overlap_tolerance = self._y_pixels(0.3)
+            if -overlap_tolerance <= y_distance <= max_distance_y and x_distance <= max_distance_x:
+                candidates.append((det, abs(y_distance)))
 
         # Sort by Y distance (closest first)
         candidates.sort(key=lambda x: x[1])
@@ -430,7 +495,9 @@ class FormExtractor:
         x_range = max(x_coords) - min(x_coords)
         y_range = max(y_coords) - min(y_coords)
 
-        if x_range > 400 or y_range > 300:
+        # X range: 16% of image width (≈400px at 2500px)
+        # Y range: 8.5% of image height (≈300px at 3500px)
+        if x_range > self._x_pixels(16.0) or y_range > self._y_pixels(8.5):
             return None
 
         self._logger.info("Sticker detected with %d fields", len(candidates))
@@ -514,7 +581,13 @@ class FormExtractor:
             FieldValue with act number or None
         """
         # Find texts below "Номер" header
-        texts_below = self._find_texts_below_header("Номер", detections, max_distance_y=100, max_distance_x=50)
+        # Y tolerance: 2.9% of image height (≈100px at 3500px)
+        # X tolerance: 2% of image width (≈50px at 2500px)
+        texts_below = self._find_texts_below_header(
+            "Номер", detections,
+            max_distance_y=self._y_pixels(2.9),
+            max_distance_x=self._x_pixels(2.0)
+        )
 
         if not texts_below:
             return None
@@ -539,7 +612,7 @@ class FormExtractor:
     def _extract_act_date(
         self, detections: List[Dict[str, Any]]
     ) -> Optional[FieldValue]:
-        """Extract date by assembling parts near "Дата" header.
+        """Extract date by assembling parts between 'Номер' and 'Рев' headers.
 
         Args:
             detections: List of text detections from header region
@@ -547,32 +620,39 @@ class FormExtractor:
         Returns:
             FieldValue with date in DD/MM/YYYY format or None
         """
-        # Find "Дата" header
-        date_header = self._find_column_header("Дата", detections)
-        if not date_header:
+        # Find all three headers
+        nomer_header = self._find_column_header("Номер", detections)
+        data_header = self._find_column_header("Дата", detections)
+        rev_header = self._find_column_header("Рев", detections)
+
+        if not data_header:
             return None
 
-        header_x = date_header["center"][0]
-        header_x_right = max([p[0] for p in date_header["bbox"]])
-        header_y = date_header["center"][1]
+        header_y = data_header["center"][1]
 
-        # Find numeric texts near the "Дата" header (Y±50, X+50 to X+300)
+        # Define X-zone: BETWEEN Номер and Рев (or use full range if headers missing)
+        x_min = nomer_header["center"][0] if nomer_header else 0
+        x_max = rev_header["center"][0] if rev_header else self._image_width
+
+        # Search for numeric texts in the zone
+        # Y tolerance: 2% of image height (≈70px at 3500px)
+        y_tolerance = self._y_pixels(2.0)
+
         date_parts = []
         for det in detections:
-            if det == date_header:
+            if det in [nomer_header, data_header, rev_header]:
                 continue
 
             det_x = det["center"][0]
-            det_x_left = min([p[0] for p in det["bbox"]])
             det_y = det["center"][1]
             text = det.get("text", "").strip()
 
-            # Check if it's numeric and in the right area
+            # Check for numeric content
             if re.search(r"\d+", text):
-                x_distance = det_x_left - header_x_right
                 y_distance = abs(det_y - header_y)
+                in_x_range = x_min < det_x < x_max
 
-                if 0 < x_distance < 300 and y_distance < 50:
+                if in_x_range and y_distance < y_tolerance:
                     date_parts.append(det)
 
         if not date_parts:
@@ -581,7 +661,6 @@ class FormExtractor:
         # Assemble date from parts
         assembled_date = self._assemble_date_from_parts(date_parts)
         if assembled_date:
-            # Calculate average confidence
             avg_confidence = sum(d.get("confidence", 0.0) for d in date_parts) / len(date_parts)
             return FieldValue(
                 value=assembled_date,
@@ -604,7 +683,13 @@ class FormExtractor:
             FieldValue with template revision (e.g., A3, A4) or None
         """
         # Find texts below "Рев" header
-        texts_below = self._find_texts_below_header("Рев", detections, max_distance_y=100, max_distance_x=50)
+        # Y tolerance: 2.9% of image height (≈100px at 3500px)
+        # X tolerance: 2% of image width (≈50px at 2500px)
+        texts_below = self._find_texts_below_header(
+            "Рев", detections,
+            max_distance_y=self._y_pixels(2.9),
+            max_distance_x=self._x_pixels(2.0)
+        )
 
         if not texts_below:
             return None
@@ -694,7 +779,12 @@ class FormExtractor:
                 x_distance = det_x_left - status_x_right
                 y_distance = abs(det_y - status_y)
 
-                if 0 < x_distance <= 200 and y_distance <= 30:
+                # X tolerance: 12% of image width (≈300px at 2500px)
+                # Y tolerance: 1.5% of image height (≈50px at 3500px)
+                x_tolerance = self._x_pixels(12.0)
+                y_tolerance = self._y_pixels(1.5)
+
+                if 0 < x_distance <= x_tolerance and y_distance <= y_tolerance:
                     texts_to_right.append((det, x_distance))
 
             # Sort by X distance (closest first)
@@ -711,7 +801,8 @@ class FormExtractor:
                         kolvo_x = kolvo_header["center"][0]
                         det_x = det["center"][0]
                         # Check if number is roughly aligned with КОЛ-ВО column
-                        if abs(det_x - kolvo_x) < 100:
+                        # X alignment tolerance: 4% of image width (≈100px at 2500px)
+                        if abs(det_x - kolvo_x) < self._x_pixels(4.0):
                             return FieldValue(
                                 value=match.group(1),
                                 confidence=det.get("confidence", 0.0),
@@ -808,14 +899,20 @@ class FormExtractor:
             controller_y = controller_det["center"][1]
             controller_x_right = max([p[0] for p in controller_det["bbox"]])
 
-            # Expanded search area: Y + 20 to Y + 150, X + 50 to X + 400
+            # Expanded search area: Y + 0.6% to Y + 4.3%, X ± 8%, X + 2% to X + 16%
+            y_offset_min = self._y_pixels(0.6)
+            y_offset_max = self._y_pixels(4.3)
+            x_tolerance = self._x_pixels(8.0)
+            x_right_min = self._x_pixels(2.0)
+            x_right_max = self._x_pixels(16.0)
+
             nearby = [
                 d
                 for d in detections
-                if controller_y + 20 < d["center"][1] < controller_y + 150
+                if controller_y + y_offset_min < d["center"][1] < controller_y + y_offset_max
                 and (
-                    abs(d["center"][0] - controller_x) < 200  # Below
-                    or (controller_x_right + 50 < d["center"][0] < controller_x_right + 400)  # To the right
+                    abs(d["center"][0] - controller_x) < x_tolerance  # Below
+                    or (controller_x_right + x_right_min < d["center"][0] < controller_x_right + x_right_max)  # To the right
                 )
             ]
 
@@ -824,19 +921,53 @@ class FormExtractor:
                 confidence = nearby_det.get("confidence", 0.0)
 
                 # Skip very short texts or pure numbers
-                if len(text) < 3 or text.isdigit():
+                if len(text) < 2 or text.isdigit():  # 3 → 2
                     continue
 
-                # Accept texts with confidence > 0.5 (handwritten signatures may have lower confidence)
-                if confidence < 0.5:
+                # Accept texts with confidence > 0.4 (handwritten signatures may have lower confidence)
+                if confidence < 0.4:  # 0.5 → 0.4
                     continue
 
-                # Name typically has 2-4 words
+                # Name typically has 1-4 words (accept single-word surnames)
                 words = text.split()
-                if 2 <= len(words) <= 4:
-                    # Check if it looks like a name (has uppercase letters or mixed case)
-                    if any(word and (word[0].isupper() or word.isalpha()) for word in words):
-                        candidates.append((nearby_det, confidence))
+                if 1 <= len(words) <= 4:  # 2 → 1 (accept single-word names)
+                    # Check if it looks like a name (has alphabetic characters)
+                    if any(word and word.isalpha() for word in words):
+                        # Bonus for uppercase (better confidence)
+                        has_uppercase = any(word and word[0].isupper() for word in words)
+                        adjusted_conf = confidence * 1.1 if has_uppercase else confidence
+                        candidates.append((nearby_det, adjusted_conf))
+
+        # Fallback: accept any alphabetic text with confidence >= 0.3
+        if not candidates:
+            for controller_det in controller_detections:
+                controller_x = controller_det["center"][0]
+                controller_y = controller_det["center"][1]
+                controller_x_right = max([p[0] for p in controller_det["bbox"]])
+
+                y_offset_min = self._y_pixels(0.6)
+                y_offset_max = self._y_pixels(4.3)
+                x_tolerance = self._x_pixels(8.0)
+                x_right_min = self._x_pixels(2.0)
+                x_right_max = self._x_pixels(16.0)
+
+                nearby = [
+                    d
+                    for d in detections
+                    if controller_y + y_offset_min < d["center"][1] < controller_y + y_offset_max
+                    and (
+                        abs(d["center"][0] - controller_x) < x_tolerance
+                        or (controller_x_right + x_right_min < d["center"][0] < controller_x_right + x_right_max)
+                    )
+                ]
+
+                for nearby_det in nearby:
+                    text = nearby_det.get("text", "").strip()
+                    confidence = nearby_det.get("confidence", 0.0)
+                    if len(text) >= 2 and confidence >= 0.3:
+                        words = text.split()
+                        if any(word.isalpha() for word in words):
+                            candidates.append((nearby_det, confidence * 0.9))  # Lower weight
 
         if not candidates:
             return None
@@ -1022,7 +1153,8 @@ class FormExtractor:
         for i in range(1, len(sorted_dets)):
             gap = sorted_dets[i]["center"][0] - sorted_dets[i - 1]["center"][0]
 
-            if gap > 300:  # Horizontal separator threshold
+            # Horizontal separator threshold: 12% of image width (≈300px at 2500px)
+            if gap > self._x_pixels(12.0):
                 blocks.append(current_block)
                 current_block = [sorted_dets[i]]
             else:
@@ -1115,19 +1247,23 @@ class FormExtractor:
             return "other"
 
     def _group_texts_into_rows(
-        self, texts: List[Dict[str, Any]], y_tolerance: int = 20
+        self, texts: List[Dict[str, Any]], y_tolerance: Optional[int] = None
     ) -> List[List[Dict[str, Any]]]:
         """Group texts into table rows by Y-coordinate proximity.
 
         Args:
             texts: List of text detections
-            y_tolerance: Y-coordinate tolerance for grouping (pixels)
+            y_tolerance: Y-coordinate tolerance for grouping (pixels). If None, uses 0.6% of image height.
 
         Returns:
             List of rows, each row is a list of text detections
         """
         if not texts:
             return []
+
+        # Default tolerance: 0.6% of image height (≈20px at 3500px)
+        if y_tolerance is None:
+            y_tolerance = self._y_pixels(0.6)
 
         sorted_texts = sorted(texts, key=lambda t: (t["center"][1], t["center"][0]))
 
