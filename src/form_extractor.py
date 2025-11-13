@@ -26,6 +26,7 @@ from models.form_data import (
     StickerData,
     dataclass_to_dict,
 )
+from utils.json_utils import convert_numpy_types
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,7 @@ class FormExtractor:
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         with open(destination, "w", encoding="utf-8") as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
+            json.dump(output_data, f, ensure_ascii=False, indent=2, default=convert_numpy_types)
 
         duration = time.perf_counter() - start_time
 

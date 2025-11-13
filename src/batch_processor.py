@@ -16,6 +16,7 @@ from form_extractor import FormExtractor
 from ocr_engine import OCREngine
 from preprocessor import ImagePreprocessor
 from region_detector import RegionDetector
+from utils.json_utils import convert_numpy_types
 from utils.memory_monitor import MemoryMonitor
 
 
@@ -626,7 +627,7 @@ class BatchProcessor:
         }
         
         with open(summary_file, 'w', encoding='utf-8') as f:
-            json.dump(summary_data, f, ensure_ascii=False, indent=2)
+            json.dump(summary_data, f, ensure_ascii=False, indent=2, default=convert_numpy_types)
         
         return summary_file
 

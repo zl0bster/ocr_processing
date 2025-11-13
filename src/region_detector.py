@@ -79,7 +79,7 @@ class RegionDetector:
             if method == "adaptive":
                 regions = self._detect_adaptive_lines(image, template_name=template_name)
             elif method == "text_based":
-                regions = self._detect_text_projection(image)
+                regions = self._detect_text_projection(image, template_name=template_name)
             elif method == "template":
                 regions = self._detect_template_based(image, template_name=template_name)
             else:
@@ -460,13 +460,16 @@ class RegionDetector:
 
         return True
 
-    def _detect_text_projection(self, image: np.ndarray) -> List[DocumentRegion]:
-        """Detect regions using horizontal projection profile."""
+    def _detect_text_projection(
+        self, image: np.ndarray, template_name: Optional[str] = None
+    ) -> List[DocumentRegion]:
+        """Detect regions using horizontal projection profile with constraint validation."""
         gray = self._to_gray(image)
         _, binary = cv2.threshold(
             gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
         )
 
+        height = binary.shape[0]
         projection = np.sum(binary == 0, axis=1).astype(np.float32)
         window = max(5, binary.shape[0] // 50)
         kernel = np.ones(window, dtype=np.float32) / float(window)
@@ -482,10 +485,124 @@ class RegionDetector:
         segments = sorted(segments, key=lambda seg: seg[1] - seg[0], reverse=True)[:2]
         line_positions = sorted(int((start + end) / 2) for start, end in segments)
 
-        boundaries = [0, *line_positions, binary.shape[0]]
-        return self._regions_from_boundaries(
-            boundaries, binary.shape[0], detection_method="text_based", confidence=0.75
+        self._logger.debug(
+            "Text projection detected %d line candidates: %s",
+            len(line_positions),
+            [f"y={y} ({y/height:.1%})" for y in line_positions],
         )
+
+        # Filter lines for valid header boundaries
+        valid_header_lines = [
+            y for y in line_positions if self._validate_line_as_header_boundary(y, height)
+        ]
+
+        if not valid_header_lines:
+            self._logger.debug(
+                "No valid header boundaries found in text projection. "
+                "Searching fallback range [%d, %d]",
+                int(height * self._settings.region_min_header_ratio),
+                int(height * self._settings.region_max_header_ratio),
+            )
+            # Try fallback search in expected header range
+            min_header_y = int(height * self._settings.region_min_header_ratio)
+            max_header_y = int(height * self._settings.region_max_header_ratio)
+            fallback_header = self._find_fallback_line_in_range(
+                gray, min_header_y, max_header_y
+            )
+            if fallback_header:
+                valid_header_lines = [fallback_header]
+                self._logger.debug(
+                    "Found fallback header boundary at y=%d (%.1f%%)",
+                    fallback_header,
+                    fallback_header / height * 100,
+                )
+            else:
+                self._logger.debug("Fallback header search failed. Returning empty.")
+                return []
+
+        # Select best header boundary (closest to middle of valid range)
+        header_mid = height * (
+            self._settings.region_min_header_ratio
+            + self._settings.region_max_header_ratio
+        ) / 2.0
+        header_boundary = min(
+            valid_header_lines, key=lambda y: abs(y - header_mid)
+        )
+        self._logger.debug(
+            "Selected header boundary at y=%d (%.1f%%)",
+            header_boundary,
+            header_boundary / height * 100,
+        )
+
+        # Find valid defects boundary below header
+        min_defects_y = header_boundary + int(
+            height * self._settings.region_min_defects_ratio
+        )
+        max_defects_y = header_boundary + int(
+            height * self._settings.region_max_defects_ratio
+        )
+        max_defects_y = min(max_defects_y, height - 1)
+
+        valid_defects_lines = [
+            y
+            for y in line_positions
+            if y > header_boundary
+            and self._validate_line_as_defects_boundary(y, header_boundary, height)
+        ]
+
+        if not valid_defects_lines:
+            self._logger.debug(
+                "No valid defects boundaries found. Searching fallback range [%d, %d]",
+                min_defects_y,
+                max_defects_y,
+            )
+            fallback_defects = self._find_fallback_line_in_range(
+                gray, min_defects_y, max_defects_y
+            )
+            if fallback_defects:
+                valid_defects_lines = [fallback_defects]
+                self._logger.debug(
+                    "Found fallback defects boundary at y=%d (%.1f%%)",
+                    fallback_defects,
+                    fallback_defects / height * 100,
+                )
+            else:
+                self._logger.debug("Fallback defects search failed. Returning empty.")
+                return []
+
+        # Select best defects boundary
+        defects_mid = (min_defects_y + max_defects_y) / 2.0
+        defects_boundary = min(
+            valid_defects_lines, key=lambda y: abs(y - defects_mid)
+        )
+        self._logger.debug(
+            "Selected defects boundary at y=%d (%.1f%%)",
+            defects_boundary,
+            defects_boundary / height * 100,
+        )
+
+        # Build boundaries and create regions
+        boundaries = [0, header_boundary, defects_boundary, height]
+        regions = self._regions_from_boundaries(
+            boundaries, height, detection_method="text_based", confidence=0.75
+        )
+
+        # Cross-validate with template
+        if not self._cross_validate_with_template(regions, template_name):
+            self._logger.debug(
+                "Text projection regions failed template cross-validation. Returning empty."
+            )
+            return []
+
+        self._logger.debug(
+            "Text projection detection succeeded with regions: %s",
+            [
+                f"{r.region_id} y={r.y_start}-{r.y_end} ({r.y_start_norm:.1%}-{r.y_end_norm:.1%})"
+                for r in regions
+            ],
+        )
+
+        return regions
 
     def _regions_from_boundaries(
         self,

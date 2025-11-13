@@ -15,6 +15,7 @@ from paddleocr import PaddleOCR
 
 from config.settings import Settings
 from region_detector import DocumentRegion, RegionDetector
+from utils.json_utils import convert_numpy_types
 from utils.memory_monitor import MemoryMonitor
 
 
@@ -283,7 +284,7 @@ class OCREngine:
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         with open(destination, "w", encoding="utf-8") as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
+            json.dump(output_data, f, ensure_ascii=False, indent=2, default=convert_numpy_types)
 
         duration = time.perf_counter() - start_time
 
@@ -384,7 +385,7 @@ class OCREngine:
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         with open(destination, "w", encoding="utf-8") as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
+            json.dump(output_data, f, ensure_ascii=False, indent=2, default=convert_numpy_types)
 
         duration = time.perf_counter() - start_time
         avg_confidence = self._calculate_average_confidence(aggregated_detections)

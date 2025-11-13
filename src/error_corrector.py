@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from config.corrections import get_correction
 from config.settings import Settings
+from utils.json_utils import convert_numpy_types
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,7 @@ class ErrorCorrector:
         destination.parent.mkdir(parents=True, exist_ok=True)
         
         with open(destination, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
+            json.dump(output_data, f, ensure_ascii=False, indent=2, default=convert_numpy_types)
         
         duration = time.perf_counter() - start_time
         

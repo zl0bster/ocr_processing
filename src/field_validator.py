@@ -21,6 +21,7 @@ from config.validation_rules import (
     REQUIRED_FIELDS,
     CONFIDENCE_THRESHOLDS
 )
+from utils.json_utils import convert_numpy_types
 
 
 @dataclass(frozen=True)
@@ -70,7 +71,7 @@ class FieldValidator:
         destination.parent.mkdir(parents=True, exist_ok=True)
         
         with open(destination, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
+            json.dump(output_data, f, ensure_ascii=False, indent=2, default=convert_numpy_types)
         
         duration = time.perf_counter() - start_time
         
