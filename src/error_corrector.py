@@ -108,6 +108,7 @@ class ErrorCorrector:
         corrected_data = ocr_data.copy()
         corrections_log = []
         
+        # Apply corrections to main text_regions
         text_regions = ocr_data.get("text_regions", [])
         corrected_regions = []
         
@@ -143,6 +144,33 @@ class ErrorCorrector:
             corrected_regions.append(corrected_region)
         
         corrected_data["text_regions"] = corrected_regions
+        
+        # Apply corrections to ocr_results_by_region if present
+        if "ocr_results_by_region" in ocr_data:
+            corrected_by_region = {}
+            for region_id, region_texts in ocr_data["ocr_results_by_region"].items():
+                corrected_region_texts = []
+                for region_text in region_texts:
+                    original_text = region_text.get("text", "")
+                    corrected_text, was_corrected = get_correction(original_text)
+                    
+                    corrected_region_text = region_text.copy()
+                    corrected_region_text["text"] = corrected_text
+                    corrected_region_text["corrected"] = was_corrected
+                    
+                    if was_corrected:
+                        corrected_region_text["original_text"] = original_text
+                        self._logger.debug(
+                            "Correction applied in region '%s': '%s' -> '%s'",
+                            region_id, original_text, corrected_text
+                        )
+                    else:
+                        corrected_region_text["original_text"] = None
+                    
+                    corrected_region_texts.append(corrected_region_text)
+                corrected_by_region[region_id] = corrected_region_texts
+            
+            corrected_data["ocr_results_by_region"] = corrected_by_region
         
         return corrected_data, corrections_log
 
@@ -192,6 +220,13 @@ class ErrorCorrector:
                 "total_time_ms": original_metrics.get("total_time_ms", 0) + int(duration * 1000)
             }
         }
+        
+        # Preserve regions_detected and ocr_results_by_region if present
+        if "regions_detected" in original_data:
+            output["regions_detected"] = original_data["regions_detected"]
+        
+        if "ocr_results_by_region" in corrected_data:
+            output["ocr_results_by_region"] = corrected_data["ocr_results_by_region"]
         
         return output
 

@@ -15,6 +15,7 @@ from preprocessor import ImagePreprocessor
 from ocr_engine import OCREngine
 from error_corrector import ErrorCorrector
 from field_validator import FieldValidator
+from form_extractor import FormExtractor
 from batch_processor import BatchProcessor
 from region_detector import RegionDetector
 
@@ -316,9 +317,37 @@ def _run_pipeline(input_path: Path, output_path: Optional[str], settings: Settin
         validation_result.output_path,
     )
     
+    # Step 5: Data extraction
+    logger.info("Step 5: Extracting structured data...")
+    form_extractor = FormExtractor(settings=settings, logger=logger)
+    
+    extraction_result = form_extractor.extract(
+        ocr_json_path=validation_result.output_path,
+        output_path=final_output_path  # Use final_output_path if provided
+    )
+    
+    logger.info(
+        "Data extraction completed in %.3f seconds. Output: %s",
+        extraction_result.duration_seconds,
+        extraction_result.output_path
+    )
+    logger.info(
+        "Extracted %d header fields, %d defect blocks, %d analysis rows",
+        extraction_result.header_fields_extracted,
+        extraction_result.defect_blocks_found,
+        extraction_result.analysis_rows_found
+    )
+    
+    if extraction_result.mandatory_fields_missing > 0:
+        logger.warning(
+            "%d mandatory fields are missing",
+            extraction_result.mandatory_fields_missing
+        )
+    
     # Final summary
     total_time = (preprocess_result.duration_seconds + ocr_result.duration_seconds + 
-                  correction_result.duration_seconds + validation_result.duration_seconds)
+                  correction_result.duration_seconds + validation_result.duration_seconds +
+                  extraction_result.duration_seconds)
     
     logger.info("=== Pipeline Summary ===")
     logger.info("Total processing time: %.3f seconds", total_time)
@@ -331,7 +360,10 @@ def _run_pipeline(input_path: Path, output_path: Optional[str], settings: Settin
                 validation_result.validated_fields,
                 validation_result.total_fields,
                 validation_result.validation_rate * 100)
-    logger.info("Final output: %s", validation_result.output_path)
+    logger.info("Header fields extracted: %d", extraction_result.header_fields_extracted)
+    logger.info("Defect blocks found: %d", extraction_result.defect_blocks_found)
+    logger.info("Analysis rows found: %d", extraction_result.analysis_rows_found)
+    logger.info("Final output: %s", extraction_result.output_path)
     
     if preprocess_result.deskew_angle is not None:
         logger.info("Deskew angle applied: %.3f degrees", preprocess_result.deskew_angle)

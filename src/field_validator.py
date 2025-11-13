@@ -248,6 +248,13 @@ class FieldValidator:
             }
         }
         
+        # Preserve regions_detected and ocr_results_by_region if present
+        if "regions_detected" in corrected_data:
+            output["regions_detected"] = corrected_data["regions_detected"]
+        
+        if "ocr_results_by_region" in corrected_data:
+            output["ocr_results_by_region"] = corrected_data["ocr_results_by_region"]
+        
         return output
 
     def _build_output_path(self, input_path: Path) -> Path:

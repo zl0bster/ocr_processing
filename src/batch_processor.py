@@ -7,11 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+import cv2
+
 from config.settings import Settings
 from error_corrector import ErrorCorrector
 from field_validator import FieldValidator
+from form_extractor import FormExtractor
 from ocr_engine import OCREngine
 from preprocessor import ImagePreprocessor
+from region_detector import RegionDetector
 from utils.memory_monitor import MemoryMonitor
 
 
@@ -153,6 +157,8 @@ class BatchProcessor:
         preprocessor = ImagePreprocessor(settings=self._settings, logger=self._logger)
         error_corrector = ErrorCorrector(settings=self._settings, logger=self._logger)
         field_validator = FieldValidator(settings=self._settings, logger=self._logger)
+        form_extractor = FormExtractor(settings=self._settings, logger=self._logger)
+        region_detector = RegionDetector(settings=self._settings, logger=self._logger)
         
         # Initialize OCR engine (will be reloaded if memory exceeds threshold)
         ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
@@ -198,16 +204,34 @@ class BatchProcessor:
                 try:
                     # Step 1: Preprocessing
                     preprocess_result = preprocessor.process(input_path=image_file)
-                    self._logger.info("  Step 1/4: Preprocessing completed in %.3f seconds. Output: %s",
+                    self._logger.info("  Step 1/5: Preprocessing completed in %.3f seconds. Output: %s",
                                      preprocess_result.duration_seconds,
                                      preprocess_result.output_path)
                     if preprocess_result.deskew_angle is not None:
                         self._logger.debug("  Deskew angle: %.3f degrees", preprocess_result.deskew_angle)
                     
-                    # Step 2: OCR with shared engine
+                    # Step 2: OCR with shared engine (regional processing)
                     try:
-                        ocr_result = ocr_engine.process(input_path=preprocess_result.output_path)
-                        self._logger.info("  Step 2/4: OCR completed in %.3f seconds. Output: %s",
+                        # Detect regions
+                        preprocessed_image = cv2.imread(str(preprocess_result.output_path), cv2.IMREAD_COLOR)
+                        if preprocessed_image is None:
+                            raise ValueError(
+                                f"Unable to read preprocessed image '{preprocess_result.output_path}'"
+                            )
+                        
+                        regions = region_detector.detect_zones(preprocessed_image)
+                        self._logger.debug(
+                            "  Region detector identified %d zones using method '%s'",
+                            len(regions),
+                            regions[0].detection_method if regions else "none",
+                        )
+                        
+                        # Process regions
+                        ocr_result = ocr_engine.process_regions(
+                            image_path=preprocess_result.output_path,
+                            regions=regions,
+                        )
+                        self._logger.info("  Step 2/5: OCR completed in %.3f seconds. Output: %s",
                                          ocr_result.duration_seconds,
                                          ocr_result.output_path)
                         self._logger.info("  Found %d text regions (avg confidence: %.3f)",
@@ -230,7 +254,7 @@ class BatchProcessor:
                                                 ocr_result.low_confidence_count)
                     except Exception as ocr_error:
                         self._logger.error(
-                            "  Step 2/4: OCR FAILED - %s: %s",
+                            "  Step 2/5: OCR FAILED - %s: %s",
                             type(ocr_error).__name__,
                             str(ocr_error)
                         )
@@ -238,7 +262,7 @@ class BatchProcessor:
                     
                     # Step 3: Error correction
                     correction_result = error_corrector.process(input_path=ocr_result.output_path)
-                    self._logger.info("  Step 3/4: Error correction completed in %.3f seconds. Output: %s",
+                    self._logger.info("  Step 3/5: Error correction completed in %.3f seconds. Output: %s",
                                      correction_result.duration_seconds,
                                      correction_result.output_path)
                     self._logger.info("  Applied %d corrections (%.1f%%)",
@@ -249,7 +273,7 @@ class BatchProcessor:
                     validation_result = field_validator.process(
                         input_path=correction_result.output_path
                     )
-                    self._logger.info("  Step 4/4: Validation completed in %.3f seconds. Output: %s",
+                    self._logger.info("  Step 4/5: Validation completed in %.3f seconds. Output: %s",
                                      validation_result.duration_seconds,
                                      validation_result.output_path)
                     self._logger.info("  Validated %d/%d fields (%.1f%%)",
@@ -259,6 +283,21 @@ class BatchProcessor:
                     if validation_result.failed_validations > 0:
                         self._logger.warning("  %d validation failures detected",
                                             validation_result.failed_validations)
+                    
+                    # Step 5: Data extraction
+                    extraction_result = form_extractor.extract(
+                        ocr_json_path=validation_result.output_path
+                    )
+                    self._logger.info("  Step 5/5: Data extraction completed in %.3f seconds. Output: %s",
+                                     extraction_result.duration_seconds,
+                                     extraction_result.output_path)
+                    self._logger.info("  Extracted %d header fields, %d defect blocks, %d analysis rows",
+                                     extraction_result.header_fields_extracted,
+                                     extraction_result.defect_blocks_found,
+                                     extraction_result.analysis_rows_found)
+                    if extraction_result.mandatory_fields_missing > 0:
+                        self._logger.warning("  %d mandatory fields are missing",
+                                            extraction_result.mandatory_fields_missing)
                     
                     file_duration = time.perf_counter() - file_start
                     

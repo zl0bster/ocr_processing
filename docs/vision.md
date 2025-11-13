@@ -116,6 +116,82 @@ VALIDATION_RULES = {
 - Гибкость при вариациях формата (адаптивные и текстовые методы)
 - Устойчивость к искажениям за счёт каскадной стратегии и fallback
 
+### FormExtractor - Структурирование данных
+
+**Модуль:** `src/form_extractor.py`
+
+Извлекает структурированные бизнес-данные из региональных OCR результатов.
+
+**Входные данные:** `*-corrected.json` с региональным распознаванием (`ocr_results_by_region`)
+
+**Выходные данные:** `*-data.json` со структурой:
+- `header`: реквизиты документа (номер акта, дата, контролёр, количества)
+- `defects`: блоки таблиц дефектов (геометрия, отверстия, поверхность)
+- `analysis`: анализ отклонений и финальное решение
+
+**Ключевые возможности:**
+
+1. **Детекция наклейки (приоритетный источник)**
+   - Определение по ключевым словам и компактности группы
+   - Извлечение полей: строка, количество, заказ, дата, клиент
+   - Наклейка имеет приоритет над рукописными данными
+
+2. **Извлечение header секции**
+   - Номер акта (паттерн `XXX/YY`, верхний правый угол)
+   - Дата акта (формат `DD.MM.YYYY`)
+   - Тип бланка (ревизия, например `A3`)
+   - Количественные показатели (проверено, с дефектами, годно)
+   - Тип контроля (операционный/входной/выходной)
+   - ФИО контролёра ОТК
+
+3. **Парсинг defects зоны**
+   - Разделение на 2-3 горизонтальных блока по X-координате (промежутки > 300px)
+   - Классификация блоков: геометрия, отверстия, поверхность
+   - Группировка текстов в строки таблиц по Y-координате (tolerance = 20px)
+   - Определение колонок по позиции и заголовкам
+
+4. **Парсинг analysis зоны**
+   - Таблица отклонений (№ п/п, Операция, Причина, Виновный, Решение)
+   - Финальное решение (использовать/доработать/не использовать)
+   - Подписи руководителя и представителя ОТК
+
+5. **Валидация данных**
+   - Проверка обязательных полей header
+   - Пометка сомнительных значений (низкая уверенность < 0.7)
+   - Валидация форматов (дата, номер акта)
+
+**Структура данных:**
+
+Использует простые dataclasses (KISS принцип):
+- `FieldValue`: поле с метаданными (value, confidence, source, suspicious)
+- `HeaderData`: структура header секции
+- `StickerData`: данные наклейки
+- `DefectBlock`: блок таблицы дефектов
+- `DefectRow`: строка таблицы дефектов
+- `AnalysisData`: структура analysis секции
+- `AnalysisRow`: строка таблицы отклонений
+- `FinalDecision`: финальное решение
+
+**Алгоритмы:**
+
+1. **Горизонтальные блоки:** сортировка по X, поиск промежутков > 300px
+2. **Группировка строк:** сортировка по Y, группировка по tolerance (20px)
+3. **Детекция наклейки:** компактность группы (x_range < 400px, y_range < 300px)
+4. **Извлечение полей:** поиск по ключевым словам и координатам
+
+**Обработка ошибок:**
+
+- Graceful degradation: продолжение работы при частичных сбоях
+- Логирование проблемных полей
+- Пометка сомнительных значений
+- Валидация обязательных полей с отчетами об ошибках
+
+**Интеграция:**
+
+- Автоматически выполняется после валидации (Step 5 в пайплайне)
+- Интегрирован в batch_processor для пакетной обработки
+- Использует региональные OCR результаты из `process_regions()`
+
 ## Принципы разработки
 
 **KISS Philosophy:**
@@ -152,14 +228,19 @@ Image_ocr/
 │   ├── error_corrector.py       # Постобработка и коррекция ошибок
 │   ├── field_validator.py       # Валидация полей формы
 │   ├── form_extractor.py        # Извлечение структурированных данных
-│   ├── json_builder.py          # Создание итоговой JSON структуры
 │   ├── batch_processor.py       # Пакетная обработка файлов
-│   └── config/
+│   ├── config/
+│   │   ├── __init__.py
+│   │   ├── settings.py          # Настройки приложения
+│   │   ├── corrections.py       # Словарь исправлений OCR
+│   │   ├── validation_rules.py  # Правила валидации полей
+│   │   └── region_templates.py  # Шаблоны регионов
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── form_data.py         # Dataclass-модели данных (FieldValue, HeaderData, DefectBlock, etc.)
+│   └── utils/
 │       ├── __init__.py
-│       ├── settings.py          # Настройки приложения
-│       ├── templates.py         # Шаблоны бланков
-│       ├── corrections.py       # Словарь исправлений OCR
-│       └── validation_rules.py  # Правила валидации полей
+│       └── memory_monitor.py    # Мониторинг памяти
 ├── images/                      # Входные изображения
 ├── results/                     # Результаты обработки
 ├── docs/                        # Документация
@@ -200,8 +281,13 @@ Image_ocr/
    - Валидация обязательных полей
    - Проверка паттернов
 6. **FormExtractor** - извлечение структурированных данных формы
-   - Определение назначения колонок по заголовкам
-   - Группировка данных по секциям
+   - Извлечение данных header секции (номер акта, дата, инспектор)
+   - Детекция наклейки (приоритетный источник данных)
+   - Разделение defects зоны на горизонтальные блоки (геометрия/отверстия/поверхность)
+   - Группировка текстов в строки таблиц по Y-координате
+   - Парсинг таблиц дефектов и анализа отклонений
+   - Валидация обязательных полей header
+   - Пометка сомнительных значений (низкая уверенность)
 7. **JSONBuilder** - создание итоговой структуры данных
    - Формирование валидного JSON
    - Добавление метаданных обработки
@@ -232,111 +318,147 @@ Image_ocr/
 4. **Исправленные данные** → JSON с постфиксом `-corrected`
 5. **Итоговые данные** → JSON с постфиксом `-data`
 
-**Структура итогового JSON:**
+**Структура итогового JSON (`-data.json`):**
+
+Формируется FormExtractor на основе региональных OCR результатов:
+
 ```json
 {
   "document_info": {
-    "filename": "report_2025-10-15_16-45-17.jpg",
-    "processing_date": "2025-11-08T10:30:00",
-    "template_version": "v1.0",
-    "template_used": "otk_v1"
+    "source_file": "034_compr-cor.jpg",
+    "processing_date": "2025-11-13T12:00:00",
+    "ocr_engine": "PaddleOCR",
+    "language": "ru"
   },
-  "zones_detected": {
-    "header": {"x": 0, "y": 0, "width": 1920, "height": 200},
-    "defects": {"x": 0, "y": 600, "width": 1920, "height": 400},
-    "decisions": {"x": 0, "y": 1500, "width": 1920, "height": 400}
-  },
-  "form_data": {
-    "header": {
-      "act_number": {
-        "value": "АКТ-001",
-        "confidence": 0.95,
-        "corrected": false,
-        "validated": true
+  "header": {
+    "act_number": {
+      "value": "034/25",
+      "confidence": 0.995,
+      "source": "header",
+      "validated": true,
+      "suspicious": false
+    },
+    "act_date": {
+      "value": "05.11.2025",
+      "confidence": 0.998,
+      "source": "header",
+      "validated": true
+    },
+    "sticker_data": {
+      "part_line_number": {
+        "value": "11962",
+        "confidence": 0.969,
+        "source": "sticker"
       },
-      "date": {
-        "value": "15.10.2025",
-        "confidence": 0.92,
-        "corrected": false,
-        "validated": true
-      },
-      "revision": {
-        "value": "01",
-        "confidence": 0.88,
-        "corrected": false,
-        "validated": true
-      },
-      "inspector": {
-        "value": "Иванов И.И.",
-        "confidence": 0.85,
-        "corrected": false,
-        "validated": false
+      "quantity_ordered": {
+        "value": "85",
+        "confidence": 0.930,
+        "source": "sticker"
       }
     },
-    "defects": [
+    "quantity_checked": {
+      "value": "116",
+      "confidence": 0.993,
+      "source": "header",
+      "validated": true
+    },
+    "control_type": {
+      "value": "операционный",
+      "confidence": 0.995,
+      "source": "header"
+    },
+    "inspector_name": {
+      "value": "Денисова Л.В",
+      "confidence": 0.72,
+      "source": "header",
+      "suspicious": true
+    }
+  },
+  "defects": [
+    {
+      "block_type": "geometry",
+      "block_title": "ГЕОМЕТРИЯ И ОТВЕРСТИЯ",
+      "column_headers": ["№", "ПАРАМЕТР", "ФАКТ/СТАТУС", "ОТКЛ", "КОЛ-ВО"],
+      "rows": [
+        {
+          "row_number": "1",
+          "parameter": "Смещение Ø4.2",
+          "fact_value": "симметрия φ±0,3",
+          "deviation": null,
+          "quantity": "6",
+          "confidence_avg": 0.78,
+          "source_texts": ["Смещение Ø4.2", "симметрия φ±0,3", "6"]
+        }
+      ]
+    },
+    {
+      "block_type": "surface",
+      "block_title": "ПОВЕРХНОСТЬ",
+      "column_headers": ["№", "ДЕФЕКТ", "КОЛ-ВО"],
+      "rows": [
+        {
+          "row_number": "10",
+          "defect": "Зарезна Ø2.2",
+          "quantity": "3",
+          "confidence_avg": 0.81
+        }
+      ]
+    }
+  ],
+  "analysis": {
+    "deviations": [
       {
-        "code": "Д001",
-        "description": "Царапина на поверхности",
-        "quantity": 1,
-        "decision": "Устранить",
-        "confidence": 0.87
+        "row_number": "1-11",
+        "operation": "ФРЗ 1,8",
+        "cause": "Отрезка и матросенности новых стержневых дет.",
+        "responsible": null,
+        "decision": "Утилить.",
+        "confidence_avg": 0.72
       }
     ],
-    "decisions": [
-      {
-        "parameter": "Размер детали",
-        "standard": "100±0.1",
-        "actual": "100.05",
-        "result": "Годен",
-        "confidence": 0.91
-      }
-    ]
+    "final_decision": {
+      "action": "не использовать",
+      "quantity": 1,
+      "manager_name": "Парынаев А.С.",
+      "otk_representative": "Андрианова А.В."
+    }
   },
   "validation_results": {
-    "total_fields": 12,
-    "validated_fields": 10,
-    "failed_validations": 2,
-    "errors": [
-      {
-        "field": "inspector",
-        "error": "Low confidence",
-        "value": "Иванов И.И.",
-        "confidence": 0.85
-      }
-    ]
+    "total_fields_validated": 7,
+    "mandatory_fields_missing": [],
+    "mandatory_fields_missing_count": 0,
+    "suspicious_fields": ["inspector_name"],
+    "errors": []
   },
   "corrections_applied": {
-    "count": 3,
-    "corrections": [
-      {
-        "field": "header.act_number_label",
-        "original": "Homep",
-        "corrected": "Номер"
-      }
-    ]
+    "count": 5,
+    "corrections": [...]
   },
   "processing_metrics": {
-    "total_time_ms": 2500,
-    "preprocessing_time_ms": 300,
-    "ocr_time_ms": 1200,
-    "correction_time_ms": 150,
-    "validation_time_ms": 100,
-    "structuring_time_ms": 750,
-    "ocr_confidence": 0.89,
-    "zones_detected": 3,
-    "texts_recognized": 75,
-    "errors_corrected": 3
+    "ocr_time_ms": 14242,
+    "correction_time_ms": 2,
+    "validation_time_ms": 1,
+    "extraction_time_ms": 3200,
+    "defect_blocks_detected": 2,
+    "defect_rows_extracted": 12,
+    "analysis_rows_extracted": 1,
+    "total_time_ms": 17445
   }
 }
 ```
 
-**Pydantic модели для валидации:**
-- `DocumentInfo` - метаданные документа
-- `ZoneCoordinates` - координаты обнаруженных зон
-- `FieldValue` - значение поля с метаданными (значение, уверенность, статус коррекции/валидации)
-- `HeaderData`, `DefectRecord`, `DecisionRecord` - данные секций формы
-- `ValidationResult` - результаты валидации
-- `CorrectionRecord` - запись об исправлении
+**Модели данных (dataclasses):**
+
+Используются простые dataclasses (KISS принцип, см. `src/models/form_data.py`):
+- `FieldValue` - значение поля с метаданными (value, confidence, source, validated, suspicious)
+- `StickerData` - данные наклейки (приоритетный источник)
+- `HeaderData` - структура header секции (реквизиты документа, количества, контролёр)
+- `DefectBlock` - блок таблицы дефектов (геометрия/отверстия/поверхность)
+- `DefectRow` - строка таблицы дефектов
+- `AnalysisData` - структура analysis секции
+- `AnalysisRow` - строка таблицы отклонений
+- `FinalDecision` - финальное решение и подписи
+- `ValidationResult` - результаты валидации обязательных полей
 - `ProcessingMetrics` - метрики обработки
 
 ## Мониторинг
@@ -403,10 +525,9 @@ python src/main.py --file image.jpg --template otk_v2 --quality high
 
 **Выходные файлы для каждого изображения:**
 - `filename-cor.jpg` - предобработанное изображение
-- `filename-zones.json` - координаты обнаруженных зон
-- `filename-texts.json` - результаты OCR
-- `filename-corrected.json` - исправленные данные OCR
-- `filename-data.json` - итоговая структура данных с валидацией
+- `filename-texts.json` - результаты OCR с региональным распознаванием (`regions_detected`, `ocr_results_by_region`)
+- `filename-corrected.json` - исправленные данные OCR (сохраняет `ocr_results_by_region`)
+- `filename-data.json` - итоговая структурированная структура данных (header, defects, analysis) с валидацией
 
 **Типичный workflow:**
 1. Поместить изображения в `/images/`
@@ -813,5 +934,6 @@ Standard format processing summary:
 ---
 
 *Документ создан: 2025-11-08*  
+*Последнее обновление: 2025-11-13*
 *Версия: 1.0*
 
