@@ -5,7 +5,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import cv2
 
@@ -32,6 +32,7 @@ class FileResult:
     average_confidence: float = 0.0
     corrections_applied: int = 0
     fields_validated: int = 0
+    extraction_result_path: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -309,7 +310,8 @@ class BatchProcessor:
                         texts_found=ocr_result.total_texts_found,
                         average_confidence=ocr_result.average_confidence,
                         corrections_applied=correction_result.corrections_applied,
-                        fields_validated=validation_result.validated_fields
+                        fields_validated=validation_result.validated_fields,
+                        extraction_result_path=extraction_result.output_path
                     ))
                     
                     self._logger.info("✓ %s completed in %.3f seconds", 
@@ -599,6 +601,52 @@ class BatchProcessor:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         summary_file = output_path / f"batch_summary_{timestamp}.json"
         
+        # Mandatory fields to extract from header
+        mandatory_fields = [
+            "act_number",
+            "act_date",
+            "template_revision",
+            "part_line_number",
+            "quantity_checked",
+            "control_type",
+            "inspector_name",
+        ]
+        
+        file_results_data = []
+        for result in batch_result.file_results:
+            file_data = {
+                "filename": result.filename,
+                "success": result.success,
+                "duration_seconds": round(result.duration_seconds, 3),
+                "texts_found": result.texts_found,
+                "average_confidence": round(result.average_confidence, 3),
+                "corrections_applied": result.corrections_applied,
+                "fields_validated": result.fields_validated,
+                "error_message": result.error_message,
+            }
+            
+            # Extract required fields if extraction result exists
+            if result.success and result.extraction_result_path:
+                required_fields = self._extract_required_fields(
+                    result.extraction_result_path, mandatory_fields
+                )
+                if required_fields is not None:
+                    file_data["required_fields"] = required_fields
+                else:
+                    # If extraction file cannot be read, mark all fields as missing
+                    file_data["required_fields"] = {
+                        field: {"value": None, "confidence": 0.0, "suspicious": False}
+                        for field in mandatory_fields
+                    }
+            else:
+                # If extraction failed or path missing, mark all fields as missing
+                file_data["required_fields"] = {
+                    field: {"value": None, "confidence": 0.0, "suspicious": False}
+                    for field in mandatory_fields
+                }
+            
+            file_results_data.append(file_data)
+        
         summary_data = {
             "batch_info": {
                 "processing_date": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
@@ -611,23 +659,82 @@ class BatchProcessor:
                     if batch_result.total_files > 0 else 0, 3
                 )
             },
-            "file_results": [
-                {
-                    "filename": result.filename,
-                    "success": result.success,
-                    "duration_seconds": round(result.duration_seconds, 3),
-                    "texts_found": result.texts_found,
-                    "average_confidence": round(result.average_confidence, 3),
-                    "corrections_applied": result.corrections_applied,
-                    "fields_validated": result.fields_validated,
-                    "error_message": result.error_message
-                }
-                for result in batch_result.file_results
-            ]
+            "file_results": file_results_data
         }
         
         with open(summary_file, 'w', encoding='utf-8') as f:
             json.dump(summary_data, f, ensure_ascii=False, indent=2, default=convert_numpy_types)
         
         return summary_file
+    
+    def _extract_required_fields(
+        self, extraction_result_path: Path, mandatory_fields: List[str]
+    ) -> Optional[Dict[str, Dict[str, Any]]]:
+        """Extract required fields from extraction result JSON file.
+        
+        Args:
+            extraction_result_path: Path to -data.json file
+            mandatory_fields: List of mandatory field names to extract
+            
+        Returns:
+            Dictionary mapping field names to their values, confidence, and suspicious flag,
+            or None if file cannot be read
+        """
+        import json
+        
+        if not extraction_result_path.exists():
+            self._logger.warning(
+                "Extraction result file not found: %s", extraction_result_path
+            )
+            return None
+        
+        try:
+            with open(extraction_result_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            self._logger.warning(
+                "Failed to load extraction result from %s: %s",
+                extraction_result_path,
+                str(e)
+            )
+            return None
+        
+        # Extract header section
+        header = data.get("header", {})
+        if not header:
+            self._logger.warning(
+                "No header section found in extraction result: %s",
+                extraction_result_path
+            )
+            # Return all fields as missing
+            return {
+                field: {"value": None, "confidence": 0.0, "suspicious": False}
+                for field in mandatory_fields
+            }
+        
+        # Extract required fields
+        required_fields = {}
+        for field_name in mandatory_fields:
+            field_data = header.get(field_name)
+            
+            if field_data is None:
+                # Field is missing
+                required_fields[field_name] = {
+                    "value": None,
+                    "confidence": 0.0,
+                    "suspicious": False,
+                }
+            else:
+                # Extract value, confidence, and suspicious flag
+                value = field_data.get("value")
+                confidence = field_data.get("confidence", 0.0)
+                suspicious = field_data.get("suspicious", False)
+                
+                required_fields[field_name] = {
+                    "value": value,
+                    "confidence": round(confidence, 3),
+                    "suspicious": suspicious,
+                }
+        
+        return required_fields
 
