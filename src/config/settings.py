@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     ocr_det_limit_side_len: int = 2000   # PaddleOCR detection limit
     ocr_memory_reload_threshold_mb: int = 700  # Reload OCR engine if memory exceeds this (MB)
     enable_deskew: bool = True
+    # Perspective correction parameters
+    enable_perspective_correction: bool = True
+    perspective_min_area_ratio: float = 0.2  # Min area of contour relative to image
+    perspective_corner_epsilon: float = 0.02  # Polygon approximation epsilon
+    perspective_target_width_limit: int = 3000  # Max width after correction
+    perspective_target_height_limit: int = 2000  # Max height after correction
+    perspective_min_corner_distance: int = 50  # Min pixels between corners
     enable_denoising: bool = True
     processed_suffix: str = "-cor"
     template_name: str = "otk_v1"
@@ -89,5 +96,29 @@ class Settings(BaseSettings):
             raise ValueError("adaptive_block_size must be a positive integer")
         if value % 2 == 0:
             raise ValueError("adaptive_block_size must be odd")
+        return value
+
+    @field_validator("perspective_min_area_ratio")
+    def _ensure_perspective_min_area_ratio(cls, value: float) -> float:
+        if not 0.0 < value <= 1.0:
+            raise ValueError("perspective_min_area_ratio must be between 0.0 and 1.0")
+        return value
+
+    @field_validator("perspective_corner_epsilon")
+    def _ensure_perspective_corner_epsilon(cls, value: float) -> float:
+        if not 0.0 < value <= 1.0:
+            raise ValueError("perspective_corner_epsilon must be between 0.0 and 1.0")
+        return value
+
+    @field_validator("perspective_target_width_limit", "perspective_target_height_limit")
+    def _ensure_perspective_target_size(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("perspective target size limits must be positive integers")
+        return value
+
+    @field_validator("perspective_min_corner_distance")
+    def _ensure_perspective_min_corner_distance(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("perspective_min_corner_distance must be a positive integer")
         return value
 

@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from config.settings import Settings
+from perspective_corrector import PerspectiveCorrector
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,17 @@ class ImagePreprocessor:
         )
 
     def _apply_pipeline(self, image: np.ndarray) -> Tuple[np.ndarray, Optional[float]]:
-        """Apply deskewing and enhancement steps sequentially."""
+        """Apply perspective correction, deskewing and enhancement steps sequentially."""
+        # Step 1: Perspective correction (before deskew)
+        if self._settings.enable_perspective_correction:
+            corrector = PerspectiveCorrector(self._settings, self._logger)
+            image, was_corrected = corrector.correct(image)
+            if was_corrected:
+                self._logger.debug("Perspective correction applied successfully")
+            else:
+                self._logger.debug("Perspective correction skipped (no suitable document found)")
+
+        # Step 2: Deskew
         deskew_angle: Optional[float] = None
         if self._settings.enable_deskew:
             image, deskew_angle = self._deskew(image)
@@ -63,6 +74,7 @@ class ImagePreprocessor:
             else:
                 self._logger.debug("Deskew skipped (no text contours detected)")
 
+        # Step 3: Enhancement
         enhanced_image = self._enhance(image)
         return enhanced_image, deskew_angle
 
