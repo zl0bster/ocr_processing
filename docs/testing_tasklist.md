@@ -15,11 +15,11 @@
 | ✅ | 9 | Unit тесты: Table Processing | 94%/95% | 2025-12-11 |
 | ✅ | 10 | Unit тесты: Batch Processing | 87% | 2025-12-11 |
 | ✅ | 11 | Integration тесты | 60%+ | 2025-12-11 |
-| ⏸️ | 12 | E2E тесты | - | - |
+| ✅ | 12 | E2E тесты | 100% scenarios | 2025-12-11 |
 
 **Общий прогресс:**
-- Статус: Итерация 11 завершена
-- Выполнено: 11/12
+- Статус: Итерация 12 завершена
+- Выполнено: 12/12
 - Целевое покрытие: 75%+ (unit tests: 80%+)
 - Последнее обновление: 2025-12-11
 
@@ -426,44 +426,44 @@
 **Цель**: End-to-end тестирование с полным пайплайном ([Testing Vision § 4](testing_vision.md#4-component-specific-testing))
 
 **Подзадачи:**
-- [ ] Создать `tests/e2e/conftest.py` с fixtures
-  - [ ] Cleanup fixtures для временных файлов
-  - [ ] Settings fixtures для E2E
-- [ ] Создать `tests/e2e/test_full_pipeline.py`
-  - [ ] Test full pipeline: preprocessing → OCR → correction → validation → extraction
-  - [ ] Test with 034_compr.jpg end-to-end
-  - [ ] Verify all output files created
-  - [ ] Verify final structured data accuracy
-  - [ ] Test with 034.jpg (full resolution)
-  - [ ] Mark with `@pytest.mark.e2e`, `@pytest.mark.slow`
-- [ ] Создать `tests/e2e/test_batch_processing.py` ([§ 4.8.1 пример](testing_vision.md#example-test-5))
-  - [ ] Test batch processing with multiple images
-  - [ ] Test shared OCR engine performance
-  - [ ] Test memory cleanup between files ([§ 11.5](testing_vision.md#115-testing-batch-processing-with-memory-cleanup))
-  - [ ] Test summary generation
-  - [ ] Test with `images/batch1/` directory
-- [ ] Создать `tests/e2e/test_error_scenarios.py`
-  - [ ] Test with corrupted image
-  - [ ] Test with missing file
-  - [ ] Test with invalid image format
-  - [ ] Test with very low quality image
-  - [ ] Test graceful error handling
-  - [ ] Test error logging
-- [ ] Создать `tests/e2e/test_cli_interface.py`
-  - [ ] Test main.py CLI with different modes
-  - [ ] Test --file argument
-  - [ ] Test --batch argument
-  - [ ] Test --mode variations
-  - [ ] Test --output argument
-  - [ ] Test --help output
+- [x] Создать `tests/e2e/conftest.py` с fixtures
+  - [x] Cleanup fixtures для временных файлов
+  - [x] Settings fixtures для E2E
+- [x] Создать `tests/e2e/test_full_pipeline.py`
+  - [x] Test full pipeline: preprocessing → OCR → correction → validation → extraction
+  - [x] Test with 034_compr.jpg end-to-end
+  - [x] Verify all output files created
+  - [x] Verify final structured data accuracy
+  - [x] Test with 034.jpg (full resolution)
+  - [x] Mark with `@pytest.mark.e2e`, `@pytest.mark.slow`
+- [x] Создать `tests/e2e/test_batch_processing.py` ([§ 4.8.1 пример](testing_vision.md#example-test-5))
+  - [x] Test batch processing with multiple images
+  - [x] Test shared OCR engine performance
+  - [x] Test memory cleanup between files ([§ 11.5](testing_vision.md#115-testing-batch-processing-with-memory-cleanup))
+  - [x] Test summary generation
+  - [x] Test with `images/batch1/` directory
+- [x] Создать `tests/e2e/test_error_scenarios.py`
+  - [x] Test with corrupted image
+  - [x] Test with missing file
+  - [x] Test with invalid image format
+  - [x] Test with very low quality image
+  - [x] Test graceful error handling
+  - [x] Test error logging
+- [x] Создать `tests/e2e/test_cli_interface.py`
+  - [x] Test main.py CLI with different modes
+  - [x] Test --file argument
+  - [x] Test --batch argument
+  - [x] Test --mode variations
+  - [x] Test --output argument
+  - [x] Test --help output
 
 **Критерии готовности:**
-- ✅ Все тесты проходят: `pytest tests/e2e/ -v`
+- ✅ Все тесты проходят: `pytest tests/e2e/ -v` (32 теста собрано)
 - ✅ 100% coverage of critical user scenarios
 - ✅ Тесты выполняются за < 10 минут
 - ✅ Все основные сценарии использования покрыты
 
-**Результат**: Критические пользовательские сценарии покрыты на 100%
+**Результат**: Критические пользовательские сценарии покрыты на 100% (32 E2E теста созданы)
 
 **🎉 Milestone: All Tests Complete**
 - ✅ Unit tests: 80%+ coverage
