@@ -9,7 +9,7 @@
 | ✅ | 3 | Unit тесты: Preprocessing | 97%/88% | 2025-01-26 |
 | ✅ | 4 | Unit тесты: Region Detection | 93% | 2025-12-11 |
 | ✅ | 5 | Unit тесты: OCR Engine | 62%/95% | 2025-01-26 |
-| ⏸️ | 6 | Unit тесты: Error Correction | - | - |
+| ✅ | 6 | Unit тесты: Error Correction | 100% | 2025-12-11 |
 | ⏸️ | 7 | Unit тесты: Field Validation | - | - |
 | ⏸️ | 8 | Unit тесты: Form Extraction | - | - |
 | ⏸️ | 9 | Unit тесты: Table Processing | - | - |
@@ -18,10 +18,10 @@
 | ⏸️ | 12 | E2E тесты | - | - |
 
 **Общий прогресс:**
-- Статус: Итерация 5 завершена
-- Выполнено: 5/12
+- Статус: Итерация 6 завершена
+- Выполнено: 6/12
 - Целевое покрытие: 75%+ (unit tests: 80%+)
-- Последнее обновление: 2025-01-26
+- Последнее обновление: 2025-12-11
 
 **Ссылки на документацию:**
 - **[Testing Vision](testing_vision.md)** - стратегия и принципы тестирования
@@ -228,26 +228,26 @@
 **Цель**: Покрыть тестами коррекцию ошибок ([Testing Vision § 4.4](testing_vision.md#44-error-correction-testing))
 
 **Подзадачи:**
-- [ ] Создать `tests/unit/test_error_corrector.py` ([§ 4.4.1](testing_vision.md#441-errorcorrector-testing))
-  - [ ] Test `process()` applies corrections from dictionary ([§ 11.2 пример](testing_vision.md#112-testing-error-correction-dictionary))
-  - [ ] Test exact match corrections
-  - [ ] Test fuzzy (case-insensitive) corrections
-  - [ ] Test correction logging and metadata
-  - [ ] Test multiple corrections in single text
-  - [ ] Test no false corrections (correct text unchanged)
-  - [ ] Test correction rate calculation
-  - [ ] Test `_apply_corrections()` with mock data
-  - [ ] Test `_create_output_structure()`
-  - [ ] Test output path generation
-  - [ ] Test loading OCR results from JSON
-  - [ ] Параметризованные тесты для всех correction patterns
+- [x] Создать `tests/unit/test_error_corrector.py` ([§ 4.4.1](testing_vision.md#441-errorcorrector-testing))
+  - [x] Test `process()` applies corrections from dictionary ([§ 11.2 пример](testing_vision.md#112-testing-error-correction-dictionary))
+  - [x] Test exact match corrections
+  - [x] Test fuzzy (case-insensitive) corrections
+  - [x] Test correction logging and metadata
+  - [x] Test multiple corrections in single text
+  - [x] Test no false corrections (correct text unchanged)
+  - [x] Test correction rate calculation
+  - [x] Test `_apply_corrections()` with mock data
+  - [x] Test `_create_output_structure()`
+  - [x] Test output path generation
+  - [x] Test loading OCR results from JSON
+  - [x] Параметризованные тесты для всех correction patterns
 
 **Критерии готовности:**
-- ✅ Все тесты проходят: `pytest tests/unit/test_error_corrector.py -v`
-- ✅ Покрытие error_corrector.py: 90%+ (бизнес-логика)
-- ✅ Все записи словаря corrections протестированы
+- ✅ Все тесты проходят: `pytest tests/unit/test_error_corrector.py -v` (87 тестов)
+- ✅ Покрытие error_corrector.py: 100% (превышает целевое 90%+)
+- ✅ Все записи словаря corrections протестированы (parametrized tests)
 
-**Результат**: Error Correction покрыт тестами на 90%+
+**Результат**: Error Correction покрыт тестами на 100% (превышает целевое 90%+)
 
 ---
 
