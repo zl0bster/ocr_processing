@@ -14,12 +14,12 @@
 | ✅ | 8 | Unit тесты: Form Extraction | 85% | 2025-01-26 |
 | ✅ | 9 | Unit тесты: Table Processing | 94%/95% | 2025-12-11 |
 | ✅ | 10 | Unit тесты: Batch Processing | 87% | 2025-12-11 |
-| ⏸️ | 11 | Integration тесты | - | - |
+| ✅ | 11 | Integration тесты | 60%+ | 2025-12-11 |
 | ⏸️ | 12 | E2E тесты | - | - |
 
 **Общий прогресс:**
-- Статус: Итерация 10 завершена
-- Выполнено: 10/12
+- Статус: Итерация 11 завершена
+- Выполнено: 11/12
 - Целевое покрытие: 75%+ (unit tests: 80%+)
 - Последнее обновление: 2025-12-11
 
@@ -379,38 +379,38 @@
 **Цель**: Интеграционное тестирование с реальным PaddleOCR ([Testing Vision § 4.3.2](testing_vision.md#432-integration-tests-real-ocr))
 
 **Подзадачи:**
-- [ ] Создать `tests/integration/conftest.py` с fixtures
-  - [ ] Shared OCR engine fixture (для переиспользования)
-  - [ ] Test images loading fixtures
-  - [ ] Output cleanup fixtures
-- [ ] Создать `tests/integration/test_preprocessing_pipeline.py`
-  - [ ] Test full preprocessing pipeline with real images
-  - [ ] Test perspective correction → deskew → enhancement flow
-  - [ ] Verify output file quality
-- [ ] Создать `tests/integration/test_ocr_pipeline.py` ([§ 4.3.2 пример](testing_vision.md#example-test-3))
-  - [ ] Test OCR with actual test images from `images/test_images/`
-  - [ ] Test with 034_compr.jpg
-  - [ ] Test with 034.jpg (full resolution)
-  - [ ] Measure accuracy and performance
-  - [ ] Test memory management
-  - [ ] Mark with `@pytest.mark.integration`, `@pytest.mark.requires_ocr`, `@pytest.mark.slow`
-- [ ] Создать `tests/integration/test_region_detection_ocr.py`
-  - [ ] Test region detection + OCR integration
-  - [ ] Test all detection strategies with real images
-  - [ ] Verify regional OCR results
-- [ ] Создать `tests/integration/test_correction_validation_flow.py`
-  - [ ] Test error correction → field validation flow
-  - [ ] Test with real OCR results
-- [ ] Создать `tests/integration/test_extraction_flow.py`
-  - [ ] Test OCR → correction → validation → extraction flow
-  - [ ] Verify extracted structured data
-  - [ ] Test with actual test images
-- [ ] Создать `tests/integration/test_parallel_processing.py`
-  - [ ] Test parallel vs sequential processing
-  - [ ] Test parallel region processing
-  - [ ] Test parallel cell processing
-  - [ ] Measure speedup
-  - [ ] Verify results consistency
+- [x] Создать `tests/integration/conftest.py` с fixtures
+  - [x] Shared OCR engine fixture (для переиспользования)
+  - [x] Test images loading fixtures
+  - [x] Output cleanup fixtures
+- [x] Создать `tests/integration/test_preprocessing_pipeline.py`
+  - [x] Test full preprocessing pipeline with real images
+  - [x] Test perspective correction → deskew → enhancement flow
+  - [x] Verify output file quality
+- [x] Создать `tests/integration/test_ocr_pipeline.py` ([§ 4.3.2 пример](testing_vision.md#example-test-3))
+  - [x] Test OCR with actual test images from `images/test_images/`
+  - [x] Test with 034_compr.jpg
+  - [x] Test with 034.jpg (full resolution)
+  - [x] Measure accuracy and performance
+  - [x] Test memory management
+  - [x] Mark with `@pytest.mark.integration`, `@pytest.mark.requires_ocr`, `@pytest.mark.slow`
+- [x] Создать `tests/integration/test_region_detection_ocr.py`
+  - [x] Test region detection + OCR integration
+  - [x] Test all detection strategies with real images
+  - [x] Verify regional OCR results
+- [x] Создать `tests/integration/test_correction_validation_flow.py`
+  - [x] Test error correction → field validation flow
+  - [x] Test with real OCR results
+- [x] Создать `tests/integration/test_extraction_flow.py`
+  - [x] Test OCR → correction → validation → extraction flow
+  - [x] Verify extracted structured data
+  - [x] Test with actual test images
+- [x] Создать `tests/integration/test_parallel_processing.py`
+  - [x] Test parallel vs sequential processing
+  - [x] Test parallel region processing
+  - [x] Test parallel cell processing
+  - [x] Measure speedup
+  - [x] Verify results consistency
 
 **Критерии готовности:**
 - ✅ Все тесты проходят: `pytest tests/integration/ -v`
@@ -418,7 +418,7 @@
 - ✅ Тесты выполняются за < 5 минут
 - ✅ Используется реальный PaddleOCR (CPU mode для CI)
 
-**Результат**: Критические интеграции покрыты тестами на 60%+
+**Результат**: Критические интеграции покрыты тестами на 60%+. Создано 42 интеграционных теста для проверки реального PaddleOCR и взаимодействия компонентов.
 
 ---
 
