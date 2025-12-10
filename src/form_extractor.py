@@ -88,10 +88,16 @@ class FormExtractor:
         self._image_width, self._image_height = self._get_image_dimensions(ocr_data)
 
         regions_data = ocr_data["ocr_results_by_region"]
+        table_data = ocr_data.get("table_data_by_region", {})
 
         # Extract each section
         header_data = self._extract_header(regions_data.get("header", []))
-        defects_data = self._extract_defects(regions_data.get("defects", []))
+        # Check if defects zone has table data
+        defects_table_data = table_data.get("defects")
+        if defects_table_data and defects_table_data.get("type") == "table":
+            defects_data = self._extract_defects_from_table(defects_table_data)
+        else:
+            defects_data = self._extract_defects(regions_data.get("defects", []))
         analysis_data = self._extract_analysis(regions_data.get("analysis", []))
 
         # Validate
@@ -1129,6 +1135,86 @@ class FormExtractor:
         )
 
         return result
+
+    def _extract_defects_from_table(
+        self, table_data: Dict[str, Any]
+    ) -> List[DefectBlock]:
+        """Extract defects from structured table data.
+
+        Args:
+            table_data: Table data dictionary with 'cells' and 'grid' keys
+
+        Returns:
+            List of DefectBlock structures
+        """
+        cells = table_data.get("cells", [])
+        if not cells:
+            self._logger.warning("Table data has no cells")
+            return []
+
+        self._logger.info(
+            "Extracting defects from structured table data (%d cells)", len(cells)
+        )
+
+        # Group cells by row
+        rows_dict: Dict[int, List[Dict[str, Any]]] = {}
+        for cell in cells:
+            row_idx = cell.get("row_idx", 0)
+            if row_idx not in rows_dict:
+                rows_dict[row_idx] = []
+            rows_dict[row_idx].append(cell)
+
+        # Sort rows by index
+        sorted_rows = sorted(rows_dict.keys())
+
+        # First row is typically header - skip it
+        data_rows = sorted_rows[1:] if len(sorted_rows) > 1 else sorted_rows
+
+        # For now, create a single block with all rows
+        # In the future, we could split into multiple blocks based on cell content
+        rows_list = []
+        for row_idx in data_rows:
+            row_cells = rows_dict[row_idx]
+            # Sort cells by column index
+            row_cells.sort(key=lambda c: c.get("col_idx", 0))
+
+            # Extract row data
+            row_data = DefectRow()
+            row_data.source_texts = [c.get("text", "") for c in row_cells]
+            row_data.confidence_avg = (
+                sum(c.get("confidence", 0.0) for c in row_cells) / len(row_cells)
+                if row_cells
+                else 0.0
+            )
+
+            # Map cells to row fields based on position
+            if len(row_cells) > 0:
+                row_data.row_number = row_cells[0].get("text", "").strip()
+            if len(row_cells) > 1:
+                row_data.parameter = row_cells[1].get("text", "").strip()
+            if len(row_cells) > 2:
+                row_data.fact_value = row_cells[2].get("text", "").strip()
+            if len(row_cells) > 3:
+                row_data.deviation = row_cells[3].get("text", "").strip()
+            if len(row_cells) > 4:
+                row_data.quantity = row_cells[4].get("text", "").strip()
+
+            rows_list.append(row_data)
+
+        # Create a single defect block
+        # In the future, we could classify blocks based on cell content
+        block = DefectBlock(
+            block_type="other",  # Will be classified later if needed
+            block_title="",  # No title in structured data
+            column_headers=[],  # Headers not extracted from table data yet
+            rows=rows_list,
+        )
+
+        self._logger.info(
+            "Extracted %d rows from structured table data", len(rows_list)
+        )
+
+        return [block]
 
     def _detect_horizontal_blocks(
         self, detections: List[Dict[str, Any]]

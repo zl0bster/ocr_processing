@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import gc
 import inspect
 import json
@@ -14,7 +15,11 @@ import numpy as np
 from paddleocr import PaddleOCR
 
 from config.settings import Settings
+from ocr_engine_factory import OCREngineFactory
+from parallel_ocr_worker import create_engine_params
 from region_detector import DocumentRegion, RegionDetector
+from table_detector import TableDetector
+from table_processor import TableProcessor
 from utils.json_utils import convert_numpy_types
 from utils.memory_monitor import MemoryMonitor
 
@@ -52,10 +57,20 @@ class OCREngine:
             result = engine.process(image_path)
     """
 
-    def __init__(self, settings: Settings, logger: logging.Logger) -> None:
+    def __init__(
+        self, settings: Settings, logger: logging.Logger, engine_mode: str = "full"
+    ) -> None:
+        """Initialize OCR engine.
+
+        Args:
+            settings: Application settings
+            logger: Logger instance
+            engine_mode: Engine type - 'full', 'detection', or 'recognition'
+        """
         self._settings = settings
         self._logger = logger
         self._memory_monitor = MemoryMonitor(logger)
+        self._engine_mode = engine_mode
         # Initialize OCR engine immediately (eager initialization)
         self._ocr_engine = self._initialize_ocr()
 
@@ -75,62 +90,12 @@ class OCREngine:
 
     def _initialize_ocr(self) -> PaddleOCR:
         """Initialize PaddleOCR engine with configured settings."""
-        self._logger.info("Initializing PaddleOCR engine...")
-        
-        # Build desired parameters
-        ocr_params = {
-            'use_angle_cls': True,  # Enable text angle classification
-            'lang': 'ru',  # Russian language support
-            'show_log': False,  # Suppress PaddleOCR internal logging
-            'det_limit_side_len': self._settings.ocr_det_limit_side_len,  # Limit detection size
-            'det_limit_type': 'max',  # Maximum dimension limit
-        }
-        
-        # Add GPU parameter only if enabled
-        if self._settings.ocr_use_gpu:
-            ocr_params['use_gpu'] = True
-        
-        # Filter out unsupported parameters by checking PaddleOCR.__init__ signature
-        try:
-            sig = inspect.signature(PaddleOCR.__init__)
-            supported_params = set(sig.parameters.keys())
-            
-            # Filter params to only include supported ones
-            filtered_params = {}
-            skipped_params = []
-            
-            for key, value in ocr_params.items():
-                if key in supported_params:
-                    filtered_params[key] = value
-                else:
-                    skipped_params.append(key)
-            
-            # Log skipped parameters for debugging
-            if skipped_params:
-                self._logger.debug(
-                    "Skipping unsupported PaddleOCR parameters: %s", 
-                    ", ".join(skipped_params)
-                )
-            
-            ocr_params = filtered_params
-            
-        except Exception as e:
-            self._logger.debug("Could not inspect PaddleOCR signature: %s. Using all parameters.", e)
-            
-        try:
-            ocr_engine = PaddleOCR(**ocr_params)
-        except Exception as e:
-            # Try with minimal parameters if advanced ones fail
-            self._logger.warning("Failed to initialize with advanced parameters: %s", e)
-            self._logger.info("Falling back to minimal PaddleOCR initialization...")
-            try:
-                ocr_engine = PaddleOCR(lang='ru')
-            except Exception as e2:
-                self._logger.error("Failed to initialize PaddleOCR even with minimal parameters: %s", e2)
-                # Try with no parameters at all
-                ocr_engine = PaddleOCR()
-        self._logger.info("PaddleOCR engine initialized successfully")
-        return ocr_engine
+        if self._engine_mode == "detection":
+            return OCREngineFactory.create_detection_engine(self._settings, self._logger)
+        elif self._engine_mode == "recognition":
+            return OCREngineFactory.create_recognition_engine(self._settings, self._logger)
+        else:
+            return OCREngineFactory.create_full_engine(self._settings, self._logger)
 
     def _log_image_properties(self, image: np.ndarray) -> None:
         """Log diagnostic information about the image."""
@@ -331,6 +296,35 @@ class OCREngine:
         if not regions:
             raise ValueError("Region list cannot be empty for process_regions()")
 
+        # Choose parallel or sequential processing
+        if self._should_use_parallel_regions_processing(regions):
+            return self._process_regions_parallel(image_path, regions, output_path)
+        else:
+            return self._process_regions_sequential(image_path, regions, output_path)
+
+    def _should_use_parallel_regions_processing(self, regions: List[DocumentRegion]) -> bool:
+        """Check if parallel processing should be used for regions.
+
+        Args:
+            regions: List of document regions
+
+        Returns:
+            True if parallel processing should be used
+        """
+        if not self._settings.enable_parallel_processing:
+            return False
+        return len(regions) >= self._settings.parallel_min_regions_for_parallelization
+
+    def _process_regions_sequential(
+        self,
+        image_path: Path,
+        regions: List[DocumentRegion],
+        output_path: Optional[Path] = None,
+    ) -> OCRResult:
+        """Run OCR for each detected region sequentially (original implementation)."""
+        if not regions:
+            raise ValueError("Region list cannot be empty for process_regions()")
+
         start_time = time.perf_counter()
         base_image = self._load_image(image_path)
         self._log_image_properties(base_image)
@@ -339,6 +333,7 @@ class OCREngine:
 
         aggregated_detections: List[TextDetection] = []
         detections_by_region: Dict[str, List[TextDetection]] = {}
+        table_data_by_region: Dict[str, Dict[str, Any]] = {}
 
         for region in regions:
             self._logger.info(
@@ -351,6 +346,97 @@ class OCREngine:
             region_image, region_scale = region_detector.extract_region(
                 base_image, region
             )
+
+            # Check if table detection is enabled for defects zone
+            if (
+                region.region_id == "defects"
+                and self._settings.enable_table_detection
+            ):
+                # Try table detection
+                table_detector = TableDetector(self._settings, self._logger)
+                grid = table_detector.detect_structure(region_image)
+
+                if grid and self._validate_table_grid(grid):
+                    # Process as table with cell-by-cell OCR
+                    self._logger.info(
+                        "Table structure detected in defects zone: %d rows × %d columns",
+                        grid.num_rows,
+                        grid.num_cols,
+                    )
+                    table_processor = TableProcessor(
+                        self._settings, self._logger, self
+                    )
+                    cells = table_processor.extract_cells(region_image, grid)
+
+                    if cells:
+                        # Store structured table data
+                        table_data_by_region[region.region_id] = {
+                            "type": "table",
+                            "cells": [
+                                {
+                                    "row_idx": c.row_idx,
+                                    "col_idx": c.col_idx,
+                                    "x_start": c.x_start,
+                                    "y_start": c.y_start + region.y_start,  # Adjust to full image coordinates
+                                    "x_end": c.x_end,
+                                    "y_end": c.y_end + region.y_start,
+                                    "text": c.text,
+                                    "confidence": c.confidence,
+                                    "field_name": c.field_name,
+                                }
+                                for c in cells
+                            ],
+                            "grid": {
+                                "rows": grid.rows,
+                                "cols": grid.cols,
+                                "num_rows": grid.num_rows,
+                                "num_cols": grid.num_cols,
+                                "confidence": grid.confidence,
+                            },
+                        }
+
+                        # Also create flat detections for backward compatibility
+                        # Convert cells to TextDetection format
+                        region_detections = []
+                        for cell in cells:
+                            # Create bbox from cell coordinates
+                            bbox = [
+                                [cell.x_start, cell.y_start],
+                                [cell.x_end, cell.y_start],
+                                [cell.x_end, cell.y_end],
+                                [cell.x_start, cell.y_end],
+                            ]
+                            # Adjust to full image coordinates
+                            global_bbox = [
+                                [p[0], p[1] + region.y_start] for p in bbox
+                            ]
+                            detection = TextDetection(
+                                text=cell.text,
+                                confidence=cell.confidence,
+                                bbox=global_bbox,
+                                center_x=(cell.x_start + cell.x_end) // 2,
+                                center_y=(cell.y_start + cell.y_end) // 2
+                                + region.y_start,
+                                region_id=region.region_id,
+                                local_bbox=bbox,
+                                local_center=(
+                                    (cell.x_start + cell.x_end) // 2,
+                                    (cell.y_start + cell.y_end) // 2,
+                                ),
+                            )
+                            region_detections.append(detection)
+
+                        aggregated_detections.extend(region_detections)
+                        detections_by_region[region.region_id] = region_detections
+                        self._logger.info(
+                            "Table processing for region '%s' yielded %d cells (avg confidence: %.3f)",
+                            region.region_id,
+                            len(cells),
+                            self._calculate_average_confidence(region_detections),
+                        )
+                        continue
+
+            # Standard OCR for non-table regions or fallback
             prepared_region, ocr_scale = self._resize_for_ocr(region_image)
             combined_scale = region_scale * ocr_scale
 
@@ -383,6 +469,7 @@ class OCREngine:
             image_height=height,
             regions=regions,
             grouped_detections=detections_by_region,
+            table_data=table_data_by_region,
         )
 
         destination = output_path or self._build_output_path(image_path)
@@ -422,6 +509,354 @@ class OCREngine:
             total_texts_found=len(aggregated_detections),
             average_confidence=avg_confidence,
             low_confidence_count=low_confidence_count,
+        )
+
+    def _process_regions_parallel(
+        self,
+        image_path: Path,
+        regions: List[DocumentRegion],
+        output_path: Optional[Path] = None,
+    ) -> OCRResult:
+        """Run OCR for regions in parallel using ProcessPoolExecutor."""
+        if not regions:
+            raise ValueError("Region list cannot be empty for process_regions()")
+
+        start_time = time.perf_counter()
+        base_image = self._load_image(image_path)
+        self._log_image_properties(base_image)
+
+        region_detector = RegionDetector(settings=self._settings, logger=self._logger)
+
+        aggregated_detections: List[TextDetection] = []
+        detections_by_region: Dict[str, List[TextDetection]] = {}
+        table_data_by_region: Dict[str, Dict[str, Any]] = {}
+
+        # Separate table and non-table regions
+        table_regions: List[DocumentRegion] = []
+        non_table_regions: List[DocumentRegion] = []
+
+        for region in regions:
+            if (
+                region.region_id == "defects"
+                and self._settings.enable_table_detection
+            ):
+                table_regions.append(region)
+            else:
+                non_table_regions.append(region)
+
+        # Process table regions sequentially (they use parallel cell processing internally)
+        for region in table_regions:
+            self._logger.info(
+                "Processing table region '%s' (y: %d-%d) detected via %s",
+                region.region_id,
+                region.y_start,
+                region.y_end,
+                region.detection_method,
+            )
+            region_image, region_scale = region_detector.extract_region(
+                base_image, region
+            )
+
+            # Try table detection
+            table_detector = TableDetector(self._settings, self._logger)
+            grid = table_detector.detect_structure(region_image)
+
+            if grid and self._validate_table_grid(grid):
+                # Process as table with cell-by-cell OCR (uses parallel processing internally)
+                self._logger.info(
+                    "Table structure detected in defects zone: %d rows × %d columns",
+                    grid.num_rows,
+                    grid.num_cols,
+                )
+                table_processor = TableProcessor(
+                    self._settings, self._logger, self
+                )
+                cells = table_processor.extract_cells(region_image, grid)
+
+                if cells:
+                    # Store structured table data
+                    table_data_by_region[region.region_id] = {
+                        "type": "table",
+                        "cells": [
+                            {
+                                "row_idx": c.row_idx,
+                                "col_idx": c.col_idx,
+                                "x_start": c.x_start,
+                                "y_start": c.y_start + region.y_start,
+                                "x_end": c.x_end,
+                                "y_end": c.y_end + region.y_start,
+                                "text": c.text,
+                                "confidence": c.confidence,
+                                "field_name": c.field_name,
+                            }
+                            for c in cells
+                        ],
+                        "grid": {
+                            "rows": grid.rows,
+                            "cols": grid.cols,
+                            "num_rows": grid.num_rows,
+                            "num_cols": grid.num_cols,
+                            "confidence": grid.confidence,
+                        },
+                    }
+
+                    # Convert cells to TextDetection format
+                    region_detections = []
+                    for cell in cells:
+                        bbox = [
+                            [cell.x_start, cell.y_start],
+                            [cell.x_end, cell.y_start],
+                            [cell.x_end, cell.y_end],
+                            [cell.x_start, cell.y_end],
+                        ]
+                        global_bbox = [
+                            [p[0], p[1] + region.y_start] for p in bbox
+                        ]
+                        detection = TextDetection(
+                            text=cell.text,
+                            confidence=cell.confidence,
+                            bbox=global_bbox,
+                            center_x=(cell.x_start + cell.x_end) // 2,
+                            center_y=(cell.y_start + cell.y_end) // 2
+                            + region.y_start,
+                            region_id=region.region_id,
+                            local_bbox=bbox,
+                            local_center=(
+                                (cell.x_start + cell.x_end) // 2,
+                                (cell.y_start + cell.y_end) // 2,
+                            ),
+                        )
+                        region_detections.append(detection)
+
+                    aggregated_detections.extend(region_detections)
+                    detections_by_region[region.region_id] = region_detections
+                    self._logger.info(
+                        "Table processing for region '%s' yielded %d cells (avg confidence: %.3f)",
+                        region.region_id,
+                        len(cells),
+                        self._calculate_average_confidence(region_detections),
+                    )
+
+        # Process non-table regions in parallel
+        if non_table_regions:
+            if self._settings.parallel_use_separate_engines:
+                # Use detection + recognition split approach
+                self._logger.info(
+                    "Processing %d non-table regions in parallel (det+rec split, %d workers)",
+                    len(non_table_regions),
+                    self._settings.parallel_regions_workers,
+                )
+                self._process_regions_parallel_det_rec(
+                    base_image,
+                    non_table_regions,
+                    region_detector,
+                    aggregated_detections,
+                    detections_by_region,
+                )
+            else:
+                # Use simple parallel approach (full engines in workers)
+                self._logger.info(
+                    "Processing %d non-table regions in parallel (full engines, %d workers)",
+                    len(non_table_regions),
+                    self._settings.parallel_regions_workers,
+                )
+                self._process_regions_parallel_simple(
+                    base_image,
+                    non_table_regions,
+                    region_detector,
+                    aggregated_detections,
+                    detections_by_region,
+                )
+
+        height, width = base_image.shape[:2]
+        output_data = self._create_output_structure(
+            image_path,
+            aggregated_detections,
+            start_time,
+            image_width=width,
+            image_height=height,
+            regions=regions,
+            grouped_detections=detections_by_region,
+            table_data=table_data_by_region,
+        )
+
+        destination = output_path or self._build_output_path(image_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(destination, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, ensure_ascii=False, indent=2, default=convert_numpy_types)
+
+        duration = time.perf_counter() - start_time
+        avg_confidence = self._calculate_average_confidence(aggregated_detections)
+        low_confidence_count = sum(
+            1
+            for detection in aggregated_detections
+            if detection.confidence < self._settings.ocr_confidence_threshold * 1.2
+        )
+
+        self._logger.info(
+            "Regional OCR processing completed in %.3f seconds (parallel). Total detections: %d (avg confidence: %.3f)",
+            duration,
+            len(aggregated_detections),
+            avg_confidence,
+        )
+
+        if low_confidence_count > 0:
+            self._logger.warning(
+                "%d detections across regions have low confidence (< %.2f)",
+                low_confidence_count,
+                self._settings.ocr_confidence_threshold * 1.2,
+            )
+
+        gc.collect()
+        self._memory_monitor.log_memory("after cleanup", level="DEBUG")
+
+        return OCRResult(
+            output_path=destination,
+            duration_seconds=duration,
+            total_texts_found=len(aggregated_detections),
+            average_confidence=avg_confidence,
+            low_confidence_count=low_confidence_count,
+        )
+
+    def _process_regions_parallel_simple(
+        self,
+        base_image: np.ndarray,
+        regions: List[DocumentRegion],
+        region_detector: RegionDetector,
+        aggregated_detections: List[TextDetection],
+        detections_by_region: Dict[str, List[TextDetection]],
+    ) -> None:
+        """Process regions in parallel using full OCR engines in workers."""
+        from parallel_ocr_worker import _image_to_bytes
+
+        # Prepare region tasks
+        region_tasks = []
+        for region in regions:
+            region_image, region_scale = region_detector.extract_region(
+                base_image, region
+            )
+            prepared_region, ocr_scale = self._resize_for_ocr(region_image)
+            combined_scale = region_scale * ocr_scale
+
+            # Convert to bytes for pickling
+            region_image_bytes = _image_to_bytes(prepared_region)
+
+            region_tasks.append({
+                "region": region,
+                "image_bytes": region_image_bytes,
+                "scale": combined_scale if combined_scale > 0 else 1.0,
+                "offset_y": region.y_start,
+            })
+
+        # Process in parallel
+        try:
+            from parallel_ocr_worker import process_region_worker_standalone
+
+            # Prepare task data with all necessary settings (for pickling)
+            prepared_tasks = []
+            for task in region_tasks:
+                prepared_task = {
+                    "region": task["region"],
+                    "image_bytes": task["image_bytes"],
+                    "scale": task["scale"],
+                    "offset_y": task["offset_y"],
+                    "ocr_language": self._settings.ocr_language,
+                    "ocr_use_gpu": self._settings.ocr_use_gpu,
+                    "ocr_det_limit_side_len": self._settings.ocr_det_limit_side_len,
+                    "ocr_confidence_threshold": self._settings.ocr_confidence_threshold,
+                }
+                prepared_tasks.append(prepared_task)
+
+            with ProcessPoolExecutor(
+                max_workers=self._settings.parallel_regions_workers
+            ) as executor:
+                futures = {
+                    executor.submit(process_region_worker_standalone, task): task
+                    for task in prepared_tasks
+                }
+
+                for future in as_completed(futures):
+                    task = futures[future]
+                    try:
+                        result = future.result()
+                        region_detections = []
+                        for det_dict in result["detections"]:
+                            detection = TextDetection(
+                                text=det_dict["text"],
+                                confidence=det_dict["confidence"],
+                                bbox=det_dict["bbox"],
+                                center_x=det_dict["center_x"],
+                                center_y=det_dict["center_y"],
+                                region_id=det_dict["region_id"],
+                                local_bbox=det_dict["local_bbox"],
+                                local_center=det_dict["local_center"],
+                            )
+                            region_detections.append(detection)
+
+                        aggregated_detections.extend(region_detections)
+                        detections_by_region[result["region_id"]] = region_detections
+                        self._logger.info(
+                            "Region '%s' yielded %d detections (avg confidence: %.3f)",
+                            result["region_id"],
+                            len(region_detections),
+                            self._calculate_average_confidence(region_detections),
+                        )
+                    except Exception as e:
+                        self._logger.error(
+                            "Failed to process region '%s': %s",
+                            task["region"].region_id,
+                            e,
+                        )
+
+        except Exception as e:
+            self._logger.error(
+                "Parallel region processing failed, falling back to sequential: %s", e
+            )
+            # Fallback to sequential for remaining regions
+            for region in regions:
+                region_image, region_scale = region_detector.extract_region(
+                    base_image, region
+                )
+                prepared_region, ocr_scale = self._resize_for_ocr(region_image)
+                combined_scale = region_scale * ocr_scale
+
+                ocr_results = self._run_paddle_ocr(prepared_region)
+                region_detections = self._process_ocr_results(
+                    ocr_results,
+                    scale=combined_scale if combined_scale > 0 else 1.0,
+                    offset_x=0,
+                    offset_y=region.y_start,
+                    region_id=region.region_id,
+                )
+
+                aggregated_detections.extend(region_detections)
+                detections_by_region[region.region_id] = region_detections
+
+    def _process_regions_parallel_det_rec(
+        self,
+        base_image: np.ndarray,
+        regions: List[DocumentRegion],
+        region_detector: RegionDetector,
+        aggregated_detections: List[TextDetection],
+        detections_by_region: Dict[str, List[TextDetection]],
+    ) -> None:
+        """Process regions using detection+recognition split (recommended approach).
+
+        First, detect text blocks in each region using detection engine.
+        Then, extract crops and recognize them in parallel using recognition-only engines.
+        """
+        # For now, fall back to simple parallel (det+rec split is more complex)
+        # This can be enhanced in the future
+        self._logger.info(
+            "Det+rec split approach not yet fully implemented, using simple parallel"
+        )
+        self._process_regions_parallel_simple(
+            base_image,
+            regions,
+            region_detector,
+            aggregated_detections,
+            detections_by_region,
         )
 
     def _load_image(self, path: Path) -> np.ndarray:
@@ -691,6 +1126,7 @@ class OCREngine:
         image_height: int,
         regions: Optional[List[DocumentRegion]] = None,
         grouped_detections: Optional[Dict[str, List[TextDetection]]] = None,
+        table_data: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Create structured JSON output with metadata and text detections."""
         duration = time.perf_counter() - start_time
@@ -756,6 +1192,10 @@ class OCREngine:
                 ]
             output["ocr_results_by_region"] = grouped_output
 
+        # Add table data if available
+        if table_data:
+            output["table_data_by_region"] = table_data
+
         return output
 
     def _calculate_average_confidence(self, detections: List[TextDetection]) -> float:
@@ -763,6 +1203,31 @@ class OCREngine:
         if not detections:
             return 0.0
         return sum(detection.confidence for detection in detections) / len(detections)
+
+    def _validate_table_grid(self, grid) -> bool:
+        """Validate table grid before processing.
+
+        Args:
+            grid: TableGrid object
+
+        Returns:
+            True if grid is valid for processing
+        """
+        if grid is None:
+            return False
+        if grid.num_rows < 2 or grid.num_cols < 2:
+            self._logger.debug(
+                "Table grid validation failed: insufficient rows/cols (%d rows, %d cols)",
+                grid.num_rows,
+                grid.num_cols,
+            )
+            return False
+        if grid.confidence < 0.3:
+            self._logger.debug(
+                "Table grid validation failed: low confidence (%.2f)", grid.confidence
+            )
+            return False
+        return True
 
     def _build_output_path(self, input_path: Path) -> Path:
         """Generate output path with -texts suffix."""

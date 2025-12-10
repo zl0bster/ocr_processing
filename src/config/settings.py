@@ -61,6 +61,28 @@ class Settings(BaseSettings):
     region_min_defects_ratio: float = 0.25  # Defects: min 25% of image height
     region_max_defects_ratio: float = 0.60  # Defects: max 60% of image height
     region_adaptive_template_tolerance: float = 0.10  # Max 10% deviation from template
+    # Table detection parameters
+    enable_table_detection: bool = True
+    table_detection_strategy: Literal["morphology", "template", "auto"] = "auto"
+    table_h_kernel_ratio: float = 0.5  # horizontal kernel width as ratio of image width
+    table_v_kernel_ratio: float = 0.5  # vertical kernel height as ratio of image height
+    table_line_min_length_ratio: float = 0.7  # min line length relative to dimension
+    table_line_merge_threshold: int = 10  # merge lines within this pixel distance
+    # Cell-level processing
+    table_cell_margin: int = 2  # pixel margin around each cell
+    table_cell_preprocess: bool = True  # apply cell-level preprocessing
+    table_cell_min_width: int = 20  # skip cells smaller than this
+    table_cell_min_height: int = 15
+    # Template-based detection (for known forms)
+    table_template_file: Path = Path("config/templates/table_templates.json")
+    table_use_template_fallback: bool = True
+    # Parallel processing configuration
+    enable_parallel_processing: bool = True
+    parallel_regions_workers: int = 4  # Number of workers for region processing
+    parallel_cells_workers: int = 6    # Number of workers for table cell processing
+    parallel_use_separate_engines: bool = True  # Use det+rec engine split
+    parallel_min_regions_for_parallelization: int = 2  # Min regions to trigger parallel mode
+    parallel_min_cells_for_parallelization: int = 10   # Min cells to trigger parallel mode
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -70,6 +92,10 @@ class Settings(BaseSettings):
 
     @field_validator("region_template_file", mode="before")
     def _ensure_region_template_path(cls, value: str | Path) -> Path:
+        return value if isinstance(value, Path) else Path(value)
+
+    @field_validator("table_template_file", mode="before")
+    def _ensure_table_template_path(cls, value: str | Path) -> Path:
         return value if isinstance(value, Path) else Path(value)
 
     @field_validator("gaussian_blur_kernel")

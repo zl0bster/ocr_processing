@@ -1,0 +1,33 @@
+{
+  "otk_v1_defects": {
+    "num_cols": 6,
+    "columns": [
+      {"idx": 0, "name": "row_number", "field_type": "number"},
+      {"idx": 1, "name": "parameter", "field_type": "text"},
+      {"idx": 2, "name": "norm", "field_type": "measurement"},
+      {"idx": 3, "name": "actual", "field_type": "measurement"},
+      {"idx": 4, "name": "decision", "field_type": "status"},
+      {"idx": 5, "name": "notes", "field_type": "text"}
+    ],
+    "rows": {
+      "header_rows": 1,
+      "min_row_height": 15
+    }
+  },
+  "otk_v2_defects": {
+    "num_cols": 5,
+    "columns": [
+      {"idx": 0, "name": "row_number", "field_type": "number"},
+      {"idx": 1, "name": "parameter", "field_type": "text"},
+      {"idx": 2, "name": "fact_value", "field_type": "measurement"},
+      {"idx": 3, "name": "deviation", "field_type": "measurement"},
+      {"idx": 4, "name": "quantity", "field_type": "number"}
+    ],
+    "rows": {
+      "header_rows": 1,
+      "min_row_height": 15
+    }
+  }
+}
+
+
