@@ -13,13 +13,13 @@
 | ✅ | 7 | Unit тесты: Field Validation | 100% | 2025-01-26 |
 | ✅ | 8 | Unit тесты: Form Extraction | 85% | 2025-01-26 |
 | ✅ | 9 | Unit тесты: Table Processing | 94%/95% | 2025-12-11 |
-| ⏸️ | 10 | Unit тесты: Batch Processing | - | - |
+| ✅ | 10 | Unit тесты: Batch Processing | 87% | 2025-12-11 |
 | ⏸️ | 11 | Integration тесты | - | - |
 | ⏸️ | 12 | E2E тесты | - | - |
 
 **Общий прогресс:**
-- Статус: Итерация 9 завершена
-- Выполнено: 9/12
+- Статус: Итерация 10 завершена
+- Выполнено: 10/12
 - Целевое покрытие: 75%+ (unit tests: 80%+)
 - Последнее обновление: 2025-12-11
 
@@ -349,24 +349,24 @@
 **Цель**: Покрыть тестами пакетную обработку ([Testing Vision § 4.8](testing_vision.md#48-batch-processing-testing))
 
 **Подзадачи:**
-- [ ] Создать `tests/unit/test_batch_processor.py` ([§ 4.8.1](testing_vision.md#481-batchprocessor-testing))
-  - [ ] Test `process_directory()` with mock files
-  - [ ] Test shared OCR engine pattern
-  - [ ] Test file discovery (*.jpg, *.png)
-  - [ ] Test error isolation (one file failure doesn't stop batch)
-  - [ ] Test summary generation (BatchResult)
-  - [ ] Test progress logging
-  - [ ] Test graceful degradation on errors
-  - [ ] Test FileResult creation for success/failure
-  - [ ] Test mode parameter (pipeline, ocr, preprocess, correction)
-  - [ ] Mock OCR engine and components for speed
+- [x] Создать `tests/unit/test_batch_processor.py` ([§ 4.8.1](testing_vision.md#481-batchprocessor-testing))
+  - [x] Test `process_directory()` with mock files
+  - [x] Test shared OCR engine pattern
+  - [x] Test file discovery (*.jpg, *.png)
+  - [x] Test error isolation (one file failure doesn't stop batch)
+  - [x] Test summary generation (BatchResult)
+  - [x] Test progress logging
+  - [x] Test graceful degradation on errors
+  - [x] Test FileResult creation for success/failure
+  - [x] Test mode parameter (pipeline, ocr, preprocess, correction)
+  - [x] Mock OCR engine and components for speed
 
 **Критерии готовности:**
-- ✅ Все тесты проходят: `pytest tests/unit/test_batch_processor.py -v`
-- ✅ Покрытие batch_processor.py: 80%+
-- ✅ Тесты быстрые (без реальной обработки изображений)
+- ✅ Все тесты проходят: `pytest tests/unit/test_batch_processor.py -v` (20 тестов)
+- ✅ Покрытие batch_processor.py: 87% (превышает целевое 80%+)
+- ✅ Тесты быстрые (без реальной обработки изображений, все компоненты мокированы)
 
-**Результат**: Batch Processing покрыт тестами на 80%+
+**Результат**: Batch Processing покрыт тестами на 87% (превышает целевое 80%+)
 
 **🎯 Milestone: Unit Tests Complete**
 - ✅ Все unit тесты написаны и проходят
