@@ -10,7 +10,7 @@
 | ✅ | 4 | Unit тесты: Region Detection | 93% | 2025-12-11 |
 | ✅ | 5 | Unit тесты: OCR Engine | 62%/95% | 2025-01-26 |
 | ✅ | 6 | Unit тесты: Error Correction | 100% | 2025-12-11 |
-| ⏸️ | 7 | Unit тесты: Field Validation | - | - |
+| ✅ | 7 | Unit тесты: Field Validation | 100% | 2025-01-26 |
 | ⏸️ | 8 | Unit тесты: Form Extraction | - | - |
 | ⏸️ | 9 | Unit тесты: Table Processing | - | - |
 | ⏸️ | 10 | Unit тесты: Batch Processing | - | - |
@@ -18,10 +18,10 @@
 | ⏸️ | 12 | E2E тесты | - | - |
 
 **Общий прогресс:**
-- Статус: Итерация 6 завершена
-- Выполнено: 6/12
+- Статус: Итерация 7 завершена
+- Выполнено: 7/12
 - Целевое покрытие: 75%+ (unit tests: 80%+)
-- Последнее обновление: 2025-12-11
+- Последнее обновление: 2025-01-26
 
 **Ссылки на документацию:**
 - **[Testing Vision](testing_vision.md)** - стратегия и принципы тестирования
@@ -255,28 +255,28 @@
 **Цель**: Покрыть тестами валидацию полей ([Testing Vision § 4.5](testing_vision.md#45-field-validation-testing))
 
 **Подзадачи:**
-- [ ] Создать `tests/unit/test_field_validator.py` ([§ 4.5.1](testing_vision.md#451-fieldvalidator-testing))
-  - [ ] Test `process()` validates all fields
-  - [ ] Test act_number format validation ([§ 11.3 пример](testing_vision.md#113-testing-validation-rules-with-parametrize))
+- [x] Создать `tests/unit/test_field_validator.py` ([§ 4.5.1](testing_vision.md#451-fieldvalidator-testing))
+  - [x] Test `process()` validates all fields
+  - [x] Test act_number format validation ([§ 11.3 пример](testing_vision.md#113-testing-validation-rules-with-parametrize))
     - Параметризованный: "001/2025" (valid), "abc/2025" (invalid), etc.
-  - [ ] Test date format validation
+  - [x] Test date format validation
     - Параметризованный: "15.10.2025" (valid), "15/10/2025" (invalid), etc.
-  - [ ] Test quantity validation (positive integers)
-  - [ ] Test measurement validation (decimals)
-  - [ ] Test status validation (allowed values)
-  - [ ] Test mandatory field detection
-  - [ ] Test confidence-based suspicious flagging
-  - [ ] Test validation error messages
-  - [ ] Test `_validate_field()` for all field types
-  - [ ] Test `_flag_suspicious_values()`
-  - [ ] Test output structure with validation results
+  - [x] Test quantity validation (positive integers)
+  - [x] Test measurement validation (decimals)
+  - [x] Test status validation (allowed values)
+  - [x] Test mandatory field detection
+  - [x] Test confidence-based suspicious flagging
+  - [x] Test validation error messages
+  - [x] Test `_validate_text_regions()` for all field types
+  - [x] Test `_flag_suspicious_values()` (low confidence warnings)
+  - [x] Test output structure with validation results
 
 **Критерии готовности:**
-- ✅ Все тесты проходят: `pytest tests/unit/test_field_validator.py -v`
-- ✅ Покрытие field_validator.py: 90%+ (validation rules)
-- ✅ Все validation rules протестированы
+- ✅ Все тесты проходят: `pytest tests/unit/test_field_validator.py -v` (98 тестов, 1 skipped)
+- ✅ Покрытие field_validator.py: 100% (превышает целевое 90%+)
+- ✅ Все validation rules протестированы (act_number, date, quantity, measurement, status)
 
-**Результат**: Field Validation покрыт тестами на 90%+
+**Результат**: Field Validation покрыт тестами на 100% (превышает целевое 90%+)
 
 ---
 
