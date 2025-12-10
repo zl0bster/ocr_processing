@@ -1,0 +1,12 @@
+# Development and testing dependencies
+# Install with: pip install -r requirements-dev.txt
+# Or together with main dependencies: pip install -r requirements.txt -r requirements-dev.txt
+
+# Testing framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+
+# Time manipulation for testing
+freezegun>=1.2.0
+
