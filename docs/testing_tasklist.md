@@ -7,7 +7,7 @@
 | ✅ | 1 | Тестовая инфраструктура | - | 2025-12-11 |
 | ✅ | 2 | Unit тесты: Config модули | 92% | 2025-12-11 |
 | ✅ | 3 | Unit тесты: Preprocessing | 97%/88% | 2025-01-26 |
-| ⏸️ | 4 | Unit тесты: Region Detection | - | - |
+| ✅ | 4 | Unit тесты: Region Detection | 93% | 2025-12-11 |
 | ⏸️ | 5 | Unit тесты: OCR Engine | - | - |
 | ⏸️ | 6 | Unit тесты: Error Correction | - | - |
 | ⏸️ | 7 | Unit тесты: Field Validation | - | - |
@@ -18,10 +18,10 @@
 | ⏸️ | 12 | E2E тесты | - | - |
 
 **Общий прогресс:**
-- Статус: Итерация 3 завершена
-- Выполнено: 3/12
+- Статус: Итерация 4 завершена
+- Выполнено: 4/12
 - Целевое покрытие: 75%+ (unit tests: 80%+)
-- Последнее обновление: 2025-01-26
+- Последнее обновление: 2025-12-11
 
 **Ссылки на документацию:**
 - **[Testing Vision](testing_vision.md)** - стратегия и принципы тестирования
@@ -161,26 +161,32 @@
 **Цель**: Покрыть тестами детекцию зон ([Testing Vision § 4.2](testing_vision.md#42-region-detection-testing))
 
 **Подзадачи:**
-- [ ] Создать `tests/unit/test_region_detector.py` ([§ 4.2.1](testing_vision.md#421-regiondetector-testing))
-  - [ ] Test `detect_zones()` with adaptive strategy
-  - [ ] Test adaptive line detection finds horizontal separators
-  - [ ] Test text-based projection strategy
-  - [ ] Test template-based fallback
-  - [ ] Test strategy cascade (auto mode)
-  - [ ] Test normalized coordinates (0.0-1.0)
-  - [ ] Test confidence score calculation
-  - [ ] Test region merging logic
-  - [ ] Test region validation (min/max ratios)
-  - [ ] Test error handling for empty images
-  - [ ] Test error handling for invalid images
-  - [ ] Mock template loading with `@patch`
+- [x] Создать `tests/unit/test_region_detector.py` ([§ 4.2.1](testing_vision.md#421-regiondetector-testing))
+  - [x] Test `detect_zones()` with adaptive strategy
+  - [x] Test adaptive line detection finds horizontal separators
+  - [x] Test text-based projection strategy
+  - [x] Test template-based fallback
+  - [x] Test strategy cascade (auto mode)
+  - [x] Test normalized coordinates (0.0-1.0)
+  - [x] Test confidence score calculation
+  - [x] Test region merging logic
+  - [x] Test region validation (min/max ratios)
+  - [x] Test error handling for empty images
+  - [x] Test error handling for invalid images
+  - [x] Mock template loading with `@patch`
+- [x] Создать `tests/fixtures/synthetic_documents.py` для генерации синтетических изображений
+  - [x] Параметризованная функция `create_synthetic_document()`
+  - [x] Функции для создания документов с линиями, текстовыми блоками, без границ
+  - [x] Функция `add_realistic_text()` с cv2.putText для реалистичного текста
+  - [x] Поддержка сохранения изображений для отладки
 
 **Критерии готовности:**
-- ✅ Все тесты проходят: `pytest tests/unit/test_region_detector.py -v`
-- ✅ Покрытие region_detector.py: 80%+
-- ✅ Все стратегии детекции протестированы
+- ✅ Все тесты проходят: `pytest tests/unit/test_region_detector.py -v` (56 тестов)
+- ✅ Покрытие region_detector.py: 93% (превышает целевое 80%+)
+- ✅ Все стратегии детекции протестированы (adaptive, text_based, template)
+- ✅ Все тесты выполняются быстро (< 4s для всех 56 тестов)
 
-**Результат**: Region Detection покрыт тестами на 80%+
+**Результат**: Region Detection покрыт тестами на 93% (превышает целевое 80%+)
 
 ---
 
@@ -579,6 +585,6 @@ pytest tests/e2e -v
 
 ---
 
-*Последнее обновление: 2025-01-26*
+*Последнее обновление: 2025-12-11*
 *Версия: 1.0*
 
