@@ -12,16 +12,16 @@
 | ✅ | 6 | Unit тесты: Error Correction | 100% | 2025-12-11 |
 | ✅ | 7 | Unit тесты: Field Validation | 100% | 2025-01-26 |
 | ✅ | 8 | Unit тесты: Form Extraction | 85% | 2025-01-26 |
-| ✅ | 9 | Unit тесты: Table Processing | 75%+ | 2025-12-11 |
+| ✅ | 9 | Unit тесты: Table Processing | 94%/95% | 2025-12-11 |
 | ⏸️ | 10 | Unit тесты: Batch Processing | - | - |
 | ⏸️ | 11 | Integration тесты | - | - |
 | ⏸️ | 12 | E2E тесты | - | - |
 
 **Общий прогресс:**
-- Статус: Итерация 8 завершена
-- Выполнено: 8/12
+- Статус: Итерация 9 завершена
+- Выполнено: 9/12
 - Целевое покрытие: 75%+ (unit tests: 80%+)
-- Последнее обновление: 2025-01-26
+- Последнее обновление: 2025-12-11
 
 **Ссылки на документацию:**
 - **[Testing Vision](testing_vision.md)** - стратегия и принципы тестирования
@@ -335,11 +335,13 @@
   - [x] Test error handling for invalid grid
 
 **Критерии готовности:**
-- ✅ Все тесты проходят: `pytest tests/unit/test_table_*.py -v`
-- ✅ Покрытие table_detector.py: 75%+
-- ✅ Покрытие table_processor.py: 75%+
+- ✅ Все тесты проходят: `pytest tests/unit/test_table_detector.py tests/unit/test_table_processor.py -v` (46 тестов)
+- ✅ Покрытие table_detector.py: 94% (превышает целевое 75%+)
+- ✅ Покрытие table_processor.py: 95% (превышает целевое 75%+)
+- ✅ Все тесты быстрые (< 100ms каждый, PaddleOCR мокирован)
+- ✅ Нет реальных вызовов PaddleOCR в unit тестах
 
-**Результат**: Table Processing покрыт тестами на 75%+
+**Результат**: Table Processing покрыт тестами на 94%/95% (превышает целевое 75%+)
 
 ---
 
