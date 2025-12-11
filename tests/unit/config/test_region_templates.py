@@ -340,3 +340,4 @@ class TestLoadRegionTemplates:
         assert region["confidence"] == 1.0  # Default
 
 
+

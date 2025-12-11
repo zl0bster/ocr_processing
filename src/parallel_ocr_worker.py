@@ -255,21 +255,21 @@ def recognize_cell_worker(
         _worker_cells_processed += 1
 
         # Run recognition
-        # Note: For old PaddleOCR versions, we use full engine and extract only recognition results
+        # Note: Angle classification is controlled via use_angle_cls during initialization,
+        # not via cls parameter in .ocr() method calls
         try:
             # Try new API with det=False
             try:
-                ocr_results = rec_engine.ocr(cell_image, det=False, cls=True)
+                ocr_results = rec_engine.ocr(cell_image, det=False)
             except TypeError:
-                # Fallback if det parameter not supported
-                try:
-                    ocr_results = rec_engine.ocr(cell_image, det=False)
-                except TypeError:
-                    # Old version - use full OCR and extract recognition results
-                    ocr_results = rec_engine.ocr(cell_image, cls=True)
-        except TypeError:
-            # Final fallback - no cls parameter
-            ocr_results = rec_engine.ocr(cell_image)
+                # Fallback if det parameter not supported - use full OCR
+                ocr_results = rec_engine.ocr(cell_image)
+        except Exception as err:
+            # Log error and re-raise
+            logging.getLogger(__name__).error(
+                "OCR failed for cell: %s", str(err)[:200]
+            )
+            raise
 
         # Process results
         texts = []
@@ -408,10 +408,9 @@ def process_region_worker_standalone(task_data: Dict[str, Any]) -> Dict[str, Any
             sys.stderr = old_stderr
 
     # Run OCR
-    try:
-        ocr_results = worker_engine.ocr(region_image, cls=True)
-    except TypeError:
-        ocr_results = worker_engine.ocr(region_image)
+    # Note: Angle classification is controlled via use_angle_cls during initialization,
+    # not via cls parameter in .ocr() method calls
+    ocr_results = worker_engine.ocr(region_image)
 
     # Process results
     detections = []
@@ -506,21 +505,21 @@ def recognize_region_worker(
         _worker_cells_processed += 1
 
         # Run recognition
-        # Note: For old PaddleOCR versions, we use full engine and extract only recognition results
+        # Note: Angle classification is controlled via use_angle_cls during initialization,
+        # not via cls parameter in .ocr() method calls
         try:
             # Try new API with det=False
             try:
-                ocr_results = rec_engine.ocr(region_image, det=False, cls=True)
+                ocr_results = rec_engine.ocr(region_image, det=False)
             except TypeError:
-                # Fallback if det parameter not supported
-                try:
-                    ocr_results = rec_engine.ocr(region_image, det=False)
-                except TypeError:
-                    # Old version - use full OCR and extract recognition results
-                    ocr_results = rec_engine.ocr(region_image, cls=True)
-        except TypeError:
-            # Final fallback - no cls parameter
-            ocr_results = rec_engine.ocr(region_image)
+                # Fallback if det parameter not supported - use full OCR
+                ocr_results = rec_engine.ocr(region_image)
+        except Exception as err:
+            # Log error and re-raise
+            logging.getLogger(__name__).error(
+                "OCR failed for region: %s", str(err)[:200]
+            )
+            raise
 
         # Process results into detection format
         detections = []

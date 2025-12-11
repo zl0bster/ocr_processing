@@ -246,3 +246,4 @@ class TestEmptyCellDetection:
         assert result is False
 
 
+

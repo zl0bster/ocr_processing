@@ -329,3 +329,4 @@ class TestSettingsFromEnvironment:
         assert settings.gaussian_blur_kernel == 5
 
 
+

@@ -242,3 +242,4 @@ class TestFullPipeline:
         assert isinstance(extracted_data.get("analysis"), dict)
 
 
+

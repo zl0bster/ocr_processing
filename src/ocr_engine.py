@@ -153,10 +153,12 @@ class OCREngine:
         """Execute PaddleOCR on the provided image array with retry logic.
         
         Implements progressive fallback strategy for PaddleOCR 3.x:
-        1. Try with cls=True (backward compatibility)
-        2. Try without cls parameter (PaddleOCR 3.x standard)
-        3. On RuntimeError: Try with smaller image (50% scale)
-        4. On RuntimeError: Try with minimal image (25% scale)
+        1. Try OCR on full-size image (angle classification controlled via initialization)
+        2. On RuntimeError: Try with smaller image (50% scale)
+        3. On RuntimeError: Try with minimal image (25% scale)
+        
+        Note: cls parameter is not passed to .ocr() method as angle classification
+        is controlled via use_angle_cls during PaddleOCR initialization.
         """
         self._logger.info(
             "Starting OCR text recognition on image %dx%d...",
@@ -168,45 +170,26 @@ class OCREngine:
         ocr_results = None
         last_error = None
         
-        # Strategy 1: Try with cls parameter (backward compatibility with PaddleOCR 2.x)
+        # Strategy 1: Try OCR on full-size image (angle classification controlled via initialization)
         try:
-            self._logger.debug("Attempt 1: Calling PaddleOCR.ocr() with cls=True...")
-            ocr_results = self._ocr_engine.ocr(image, cls=True)
-            self._logger.debug("PaddleOCR.ocr() completed successfully (with cls=True)")
-        except TypeError as err:
-            if "cls" in str(err):
-                self._logger.debug("cls parameter not supported (PaddleOCR 3.x detected)")
-                last_error = err
-            else:
-                raise
+            self._logger.debug("Calling PaddleOCR.ocr()...")
+            ocr_results = self._ocr_engine.ocr(image)
+            self._logger.debug("PaddleOCR.ocr() completed successfully")
         except RuntimeError as err:
             self._logger.warning(
-                "RuntimeError with cls=True: %s. Will try fallback strategies.", 
+                "RuntimeError on full-size image: %s. Trying with reduced size...", 
                 str(err)[:100]
             )
             last_error = err
         
-        # Strategy 2: Try without cls parameter (PaddleOCR 3.x standard)
-        if ocr_results is None:
-            try:
-                self._logger.debug("Attempt 2: Calling PaddleOCR.ocr() without cls parameter...")
-                ocr_results = self._ocr_engine.ocr(image)
-                self._logger.debug("PaddleOCR.ocr() completed successfully (without cls)")
-            except RuntimeError as err:
-                self._logger.warning(
-                    "RuntimeError on full-size image: %s. Trying with reduced size...", 
-                    str(err)[:100]
-                )
-                last_error = err
-        
-        # Strategy 3: Try with 50% scaled image (reduces memory pressure)
+        # Strategy 2: Try with 50% scaled image (reduces memory pressure)
         if ocr_results is None and isinstance(last_error, RuntimeError):
             try:
                 h, w = image.shape[:2]
                 scale_factor = 0.5
                 new_w, new_h = int(w * scale_factor), int(h * scale_factor)
                 self._logger.info(
-                    "Attempt 3: Downscaling image to 50%% (%dx%d -> %dx%d) to avoid RuntimeError",
+                    "Attempt 2: Downscaling image to 50%% (%dx%d -> %dx%d) to avoid RuntimeError",
                     w, h, new_w, new_h
                 )
                 scaled_image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
@@ -223,14 +206,14 @@ class OCREngine:
                 )
                 last_error = err
         
-        # Strategy 4: Last resort - try with 25% scaled image
+        # Strategy 3: Last resort - try with 25% scaled image
         if ocr_results is None and isinstance(last_error, RuntimeError):
             try:
                 h, w = image.shape[:2]
                 scale_factor = 0.25
                 new_w, new_h = int(w * scale_factor), int(h * scale_factor)
                 self._logger.warning(
-                    "Attempt 4 (last resort): Downscaling to 25%% (%dx%d -> %dx%d)",
+                    "Attempt 3 (last resort): Downscaling to 25%% (%dx%d -> %dx%d)",
                     w, h, new_w, new_h
                 )
                 scaled_image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)

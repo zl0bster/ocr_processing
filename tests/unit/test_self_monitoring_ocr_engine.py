@@ -375,3 +375,4 @@ class TestSelfMonitoringOCREngineContextManager:
         mock_ocr_engine.close.assert_called_once()
 
 
+
