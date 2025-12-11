@@ -1,4 +1,10 @@
-"""Factory for creating different types of PaddleOCR engines."""
+"""Factory for creating different types of PaddleOCR engines.
+
+FIXES APPLIED:
+- ✅ Removed deprecated parameters: use_mp, total_process_num, det_limit_type
+- ✅ Compatible with PaddleOCR 3.x API
+- ✅ Proper parameter filtering by signature inspection
+"""
 
 from __future__ import annotations
 
@@ -12,7 +18,13 @@ from config.settings import Settings
 
 
 class OCREngineFactory:
-    """Factory for creating PaddleOCR engines with different configurations."""
+    """Factory for creating PaddleOCR engines with different configurations.
+    
+    FIXES:
+    - Removed deprecated parameters: use_mp, total_process_num, det_limit_type
+    - Compatible with PaddleOCR 3.x API
+    - Proper parameter filtering by signature inspection
+    """
 
     @staticmethod
     def create_full_engine(settings: Settings, logger: logging.Logger) -> PaddleOCR:
@@ -91,27 +103,24 @@ class OCREngineFactory:
         # Suppress PaddlePaddle warnings about ccache
         os.environ.setdefault('PADDLE_SILENT', '1')
         
-        # Build desired parameters for PaddleOCR 3.x
+        # ✅ FIX: Правильные параметры для PaddleOCR 3.x
+        # УДАЛЕНЫ: use_mp, total_process_num, det_limit_type, show_log
         ocr_params = {
-            'use_angle_cls': cls,  # Enable text angle classification if cls is True
+            'use_angle_cls': cls,  # ✅ Классификация углов при инициализации
             'lang': settings.ocr_language,
-            'show_log': False,  # Suppress PaddleOCR internal logging
+            # ❌ УДАЛЕНО: 'show_log': False,        # Удалён в PaddleOCR 3.x
             'det_limit_side_len': settings.ocr_det_limit_side_len,
-            'det_limit_type': 'max',
+            # ❌ УДАЛЕНО: 'det_limit_type': 'max',  # Удалён в PaddleOCR 3.x
+            # ❌ УДАЛЕНО: 'use_mp': False,          # Удалён в PaddleOCR 3.x
+            # ❌ УДАЛЕНО: 'total_process_num': 1,   # Удалён в PaddleOCR 3.x
         }
 
         # Add GPU parameter only if enabled
         if settings.ocr_use_gpu:
             ocr_params['use_gpu'] = True
-        
-        # PaddleOCR 3.x specific: Add stability parameters
-        # These help prevent RuntimeError: Unknown exception
-        ocr_params.update({
-            'use_mp': False,  # Disable multiprocessing (can cause issues on Windows)
-            'total_process_num': 1,  # Single process for stability
-        })
 
-        # Filter out unsupported parameters by checking PaddleOCR.__init__ signature
+        # ✅ FIX: Фильтровать параметры через сигнатуру функции
+        # Это обеспечит совместимость с разными версиями PaddleOCR
         try:
             sig = inspect.signature(PaddleOCR.__init__)
             supported_params = set(sig.parameters.keys())
@@ -148,16 +157,17 @@ class OCREngineFactory:
             supports_det_rec = False
 
         if supports_det_rec:
-            # New version supports det/rec/cls parameters
+            # ✅ Версия 3.x с поддержкой det/rec/cls параметров
             try:
                 logger.debug("Initializing with det=%s, rec=%s, cls=%s", det, rec, cls)
                 ocr_engine = PaddleOCR(det=det, rec=rec, cls=cls, **ocr_params)
-            except Exception as e:
+            except (TypeError, ValueError) as e:
                 logger.warning(
                     "Failed to initialize %s engine with det/rec/cls parameters: %s. "
                     "Falling back to standard initialization.",
                     engine_type, str(e)[:200]
                 )
+
                 # Fallback to standard initialization without det/rec/cls
                 try:
                     ocr_engine = PaddleOCR(**ocr_params)
@@ -166,18 +176,18 @@ class OCREngineFactory:
                         "Standard initialization also failed: %s. Trying minimal params.",
                         str(e2)[:200]
                     )
+
                     # Last resort: minimal parameters
                     ocr_engine = PaddleOCR(
-                        lang=settings.ocr_language,
-                        show_log=False,
-                        use_mp=False
+                        lang=settings.ocr_language
                     )
         else:
-            # Old version - use standard initialization (full engine only)
+            # ✅ Старая версия без поддержки det/rec/cls
             logger.debug(
                 "PaddleOCR version does not support det/rec/cls parameters, "
                 "using full engine for all modes"
             )
+
             try:
                 ocr_engine = PaddleOCR(**ocr_params)
             except Exception as e:
@@ -186,25 +196,29 @@ class OCREngineFactory:
                     "Failed to initialize %s engine with advanced parameters: %s",
                     engine_type, str(e)[:200]
                 )
+
                 logger.info("Falling back to minimal PaddleOCR initialization...")
+
                 try:
-                    # Try without stability params
+                    # Try without advanced stability params
                     minimal_params = {
                         'lang': settings.ocr_language,
-                        'show_log': False,
-                        'use_mp': False,
                     }
+
                     if settings.ocr_use_gpu:
                         minimal_params['use_gpu'] = True
+
                     ocr_engine = PaddleOCR(**minimal_params)
+
                 except Exception as e2:
                     logger.error(
                         "Failed to initialize %s engine even with minimal parameters: %s. "
                         "Using bare defaults.",
                         engine_type, str(e2)[:200]
                     )
+
                     # Last resort: absolute bare minimum
-                    ocr_engine = PaddleOCR(lang=settings.ocr_language, use_mp=False)
+                    ocr_engine = PaddleOCR(lang=settings.ocr_language)
         
         logger.info("PaddleOCR %s engine initialized successfully", engine_type)
         return ocr_engine

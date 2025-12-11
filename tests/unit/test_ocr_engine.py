@@ -476,6 +476,7 @@ class TestOCREngineRegionProcessing:
         """Test returns True when regions >= threshold."""
         # Arrange
         test_settings.enable_parallel_processing = True
+        test_settings.parallel_regions_enabled = True
         test_settings.parallel_min_regions_for_parallelization = 2
         mock_ocr_engine = MagicMock()
         mock_factory.create_full_engine.return_value = mock_ocr_engine

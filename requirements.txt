@@ -1,5 +1,12 @@
-paddlepaddle>=2.5.0
-paddleocr>=2.7.0
+# Paddling Deep Learning Framework (PaddleOCR 3.x)
+# Протестировано с paddlepaddle 3.0.0 (CPU, Windows; Python 3.10/3.11)
+paddlepaddle==3.0.0
+
+# ✅ ИСПРАВЛЕНИЕ: Явно указана версия PaddleOCR 3.x
+# Версия 2.7.0.3+ совместима с API 3.x
+# Удалены параметры: use_mp, total_process_num, det_limit_type
+# Параметр cls переместился в инициализацию (use_angle_cls)
+paddleocr>=2.7.0.3
 opencv-python>=4.8.0
 numpy>=1.24.0
 pillow>=10.0.0

@@ -158,8 +158,8 @@ class TestSelfMonitoringOCREngineMemoryMonitoring:
         test_settings_with_pool.ocr_engine_auto_restart_threshold = 0.8
         
         mock_memory_monitor = MagicMock()
-        # First call: baseline, second: high memory (exceeds 560 MB threshold)
-        mock_memory_monitor.get_memory_mb.side_effect = [100.0, 600.0, 150.0]
+        # Return consistent values: low at init, high at check
+        mock_memory_monitor.get_memory_mb.return_value = 100.0
         mock_memory_monitor_class.return_value = mock_memory_monitor
         
         mock_ocr_engine = MagicMock()
@@ -169,6 +169,10 @@ class TestSelfMonitoringOCREngineMemoryMonitoring:
             settings=test_settings_with_pool,
             logger=mock_logger,
         )
+        
+        # Now set high memory value for the check
+        mock_memory_monitor.get_memory_mb.return_value = 600.0
+        
         engine._metrics.files_processed = 1  # At check interval
 
         # Act
@@ -178,7 +182,8 @@ class TestSelfMonitoringOCREngineMemoryMonitoring:
         assert engine._metrics.restarts_performed == 1
         mock_ocr_engine.close.assert_called_once()
         mock_gc.assert_called_once()
-        mock_ocr_engine_class.assert_called()  # Should create new engine
+        # Should create new engine (called twice: once in __init__, once in restart)
+        assert mock_ocr_engine_class.call_count == 2
 
     @patch('src.self_monitoring_ocr_engine.OCREngine')
     @patch('src.self_monitoring_ocr_engine.MemoryMonitor')
@@ -373,6 +378,8 @@ class TestSelfMonitoringOCREngineContextManager:
 
         # Assert
         mock_ocr_engine.close.assert_called_once()
+
+
 
 
 

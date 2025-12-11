@@ -205,10 +205,14 @@ class TestTableProcessorParallelDecision:
     ):
         """Test _should_use_parallel_processing() with large table."""
         # Arrange
+        table_settings.enable_parallel_processing = True
+        # Create mock engine pool (required for parallel processing)
+        mock_engine_pool = MagicMock()
         processor = TableProcessor(
             settings=table_settings,
             logger=mock_logger,
             ocr_engine=mock_ocr_engine,
+            engine_pool=mock_engine_pool,
         )
         # Grid with 4 rows * 3 cols = 12 cells (>= 10 threshold)
         
@@ -347,7 +351,7 @@ class TestTableProcessorSequential:
 class TestTableProcessorParallel:
     """Test parallel cell processing (mocked)."""
 
-    @patch("src.table_processor.ProcessPoolExecutor")
+    @patch("src.table_processor.ThreadPoolExecutor")
     def test_extract_cells_parallel(
         self,
         mock_executor_class,
@@ -361,7 +365,7 @@ class TestTableProcessorParallel:
         # Arrange
         from src.parallel_ocr_worker import CellOCRResult
         
-        # Mock ProcessPoolExecutor
+        # Mock ThreadPoolExecutor
         mock_executor = MagicMock()
         mock_future = MagicMock(spec=Future)
         mock_future.result.return_value = CellOCRResult(
@@ -398,10 +402,13 @@ class TestTableProcessorParallel:
                     )
                 mock_worker.side_effect = mock_worker_func
                 
+                # Create mock engine pool for parallel processing
+                mock_engine_pool = MagicMock()
                 processor = TableProcessor(
                     settings=table_settings,
                     logger=mock_logger,
                     ocr_engine=mock_ocr_engine,
+                    engine_pool=mock_engine_pool,
                 )
                 
                 # Act
@@ -411,7 +418,7 @@ class TestTableProcessorParallel:
                 assert isinstance(cells, list)
                 mock_logger.info.assert_called()
 
-    @patch("src.table_processor.ProcessPoolExecutor")
+    @patch("src.table_processor.ThreadPoolExecutor")
     def test_extract_cells_parallel_fallback_on_error(
         self,
         mock_executor_class,
@@ -427,10 +434,13 @@ class TestTableProcessorParallel:
         mock_executor.__enter__.side_effect = Exception("Parallel processing failed")
         mock_executor_class.return_value = mock_executor
         
+        # Create mock engine pool for parallel processing
+        mock_engine_pool = MagicMock()
         processor = TableProcessor(
             settings=table_settings,
             logger=mock_logger,
             ocr_engine=mock_ocr_engine,
+            engine_pool=mock_engine_pool,
         )
         
         # Act

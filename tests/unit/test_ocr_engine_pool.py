@@ -118,28 +118,35 @@ class TestOCREnginePoolAcquireRelease:
     def test_acquire_returns_available_engine(self, mock_engine_class,
                                             test_settings_with_pool, mock_logger):
         """Test acquire() returns an available engine."""
-        # Arrange
-        mock_engine = MagicMock()
-        mock_engine.get_metrics.return_value = MagicMock(
-            files_processed=0,
-            restarts_performed=0,
-        )
-        mock_engine_class.return_value = mock_engine
+        # Arrange - create different mock instances for each engine
+        created_mocks = []
+        def create_mock_engine(**kwargs):
+            mock_engine = MagicMock()
+            mock_engine.get_metrics.return_value = MagicMock(
+                files_processed=0,
+                restarts_performed=0,
+            )
+            created_mocks.append(mock_engine)
+            return mock_engine
+        mock_engine_class.side_effect = create_mock_engine
 
         pool = OCREnginePool(
             settings=test_settings_with_pool,
             logger=mock_logger,
         )
 
+        initial_available_count = len(pool._available_engines)
+
         # Act
         with pool.acquire() as engine:
             # Assert
             assert engine is not None
             assert engine in pool._all_engines
-            assert engine not in pool._available_engines
+            # Check that available count decreased
+            assert len(pool._available_engines) == initial_available_count - 1
 
         # After context exit, engine should be released
-        assert engine in pool._available_engines
+        assert len(pool._available_engines) == initial_available_count
 
     @patch('src.ocr_engine_pool.SelfMonitoringOCREngine')
     def test_acquire_waits_for_available_engine(self, mock_engine_class,
@@ -179,25 +186,30 @@ class TestOCREnginePoolAcquireRelease:
     def test_release_returns_engine_to_pool(self, mock_engine_class,
                                            test_settings_with_pool, mock_logger):
         """Test release() returns engine to available pool."""
-        # Arrange
-        mock_engine = MagicMock()
-        mock_engine.get_metrics.return_value = MagicMock(
-            files_processed=0,
-            restarts_performed=0,
-        )
-        mock_engine_class.return_value = mock_engine
+        # Arrange - create different mock instances for each engine
+        def create_mock_engine(**kwargs):
+            mock_engine = MagicMock()
+            mock_engine.get_metrics.return_value = MagicMock(
+                files_processed=0,
+                restarts_performed=0,
+            )
+            return mock_engine
+        mock_engine_class.side_effect = create_mock_engine
 
         pool = OCREnginePool(
             settings=test_settings_with_pool,
             logger=mock_logger,
         )
 
+        initial_available_count = len(pool._available_engines)
+
         # Act
         with pool.acquire() as engine:
-            assert engine not in pool._available_engines
+            # Check that available count decreased
+            assert len(pool._available_engines) == initial_available_count - 1
 
-        # After release
-        assert engine in pool._available_engines
+        # After release - check that count is restored
+        assert len(pool._available_engines) == initial_available_count
 
     @patch('src.ocr_engine_pool.SelfMonitoringOCREngine')
     def test_release_ignores_duplicate_release(self, mock_engine_class,
@@ -363,11 +375,33 @@ class TestOCREnginePoolCleanup:
         mock_engine_class.return_value = mock_engine
 
         # Act
-        with OCREnginePool(
-            settings=test_settings_with_pool,
-            logger=mock_logger,
-        ) as pool:
-            assert pool is not None
+        done = threading.Event()
+        errors = []
+        pool_ref = []
+
+        def run_context_manager():
+            try:
+                with OCREnginePool(
+                    settings=test_settings_with_pool,
+                    logger=mock_logger,
+                ) as pool:
+                    pool_ref.append(pool)
+                    assert pool is not None
+            except Exception as exc:  # Capture exceptions from the thread
+                errors.append(exc)
+            finally:
+                done.set()
+
+        context_thread = threading.Thread(target=run_context_manager, daemon=True)
+        context_thread.start()
+
+        finished = done.wait(15)
+        if not finished:
+            raise TimeoutError("context manager did not finish within 15 seconds")
+
+        context_thread.join()
+        if errors:
+            raise errors[0]
 
         # Assert
         mock_engine.close.assert_called()
