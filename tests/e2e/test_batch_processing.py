@@ -220,3 +220,4 @@ class TestBatchProcessing:
                            result.total_duration_seconds,
                            avg_time)
 
+

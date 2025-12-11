@@ -339,3 +339,4 @@ class TestLoadRegionTemplates:
         assert region["detection_method"] == "template"  # Default
         assert region["confidence"] == 1.0  # Default
 
+

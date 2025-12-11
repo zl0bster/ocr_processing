@@ -328,3 +328,4 @@ class TestSettingsFromEnvironment:
         assert settings.ocr_language == "en"
         assert settings.gaussian_blur_kernel == 5
 
+

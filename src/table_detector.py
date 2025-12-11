@@ -397,3 +397,4 @@ class TableDetector:
         return regularity
 
 
+

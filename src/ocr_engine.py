@@ -58,7 +58,8 @@ class OCREngine:
     """
 
     def __init__(
-        self, settings: Settings, logger: logging.Logger, engine_mode: str = "full"
+        self, settings: Settings, logger: logging.Logger, engine_mode: str = "full",
+        engine_pool: Optional["OCREnginePool"] = None
     ) -> None:
         """Initialize OCR engine.
 
@@ -66,11 +67,13 @@ class OCREngine:
             settings: Application settings
             logger: Logger instance
             engine_mode: Engine type - 'full', 'detection', or 'recognition'
+            engine_pool: Optional OCR engine pool for parallel table processing
         """
         self._settings = settings
         self._logger = logger
         self._memory_monitor = MemoryMonitor(logger)
         self._engine_mode = engine_mode
+        self._engine_pool = engine_pool
         # Initialize OCR engine immediately (eager initialization)
         self._ocr_engine = self._initialize_ocr()
 
@@ -86,6 +89,8 @@ class OCREngine:
         """Clean up OCR engine resources."""
         if self._ocr_engine is not None:
             self._logger.debug("Releasing OCR engine resources")
+            # Force deallocation of PaddleOCR object
+            del self._ocr_engine
             self._ocr_engine = None
 
     def _initialize_ocr(self) -> PaddleOCR:
@@ -145,7 +150,14 @@ class OCREngine:
         return resized, scale
 
     def _run_paddle_ocr(self, image: np.ndarray) -> List[Any]:
-        """Execute PaddleOCR on the provided image array."""
+        """Execute PaddleOCR on the provided image array with retry logic.
+        
+        Implements progressive fallback strategy for PaddleOCR 3.x:
+        1. Try with cls=True (backward compatibility)
+        2. Try without cls parameter (PaddleOCR 3.x standard)
+        3. On RuntimeError: Try with smaller image (50% scale)
+        4. On RuntimeError: Try with minimal image (25% scale)
+        """
         self._logger.info(
             "Starting OCR text recognition on image %dx%d...",
             image.shape[1],
@@ -153,29 +165,97 @@ class OCREngine:
         )
         mem_before_ocr = self._memory_monitor.log_memory("before OCR", level="INFO")
 
+        ocr_results = None
+        last_error = None
+        
+        # Strategy 1: Try with cls parameter (backward compatibility with PaddleOCR 2.x)
         try:
-            self._logger.debug("Calling PaddleOCR.ocr()...")
-            try:
-                ocr_results = self._ocr_engine.ocr(image, cls=True)
-            except TypeError as err:
-                if "cls" in str(err):
-                    self._logger.debug(
-                        "OCR cls parameter not supported, trying without it"
-                    )
-                    ocr_results = self._ocr_engine.ocr(image)
-                else:
-                    raise
-            self._logger.debug("PaddleOCR.ocr() completed successfully")
-        except Exception as exc:  # pragma: no cover - passthrough for logging
-            self._logger.error(
-                "PaddleOCR.ocr() failed with exception: %s",
-                type(exc).__name__,
-                exc_info=True,
+            self._logger.debug("Attempt 1: Calling PaddleOCR.ocr() with cls=True...")
+            ocr_results = self._ocr_engine.ocr(image, cls=True)
+            self._logger.debug("PaddleOCR.ocr() completed successfully (with cls=True)")
+        except TypeError as err:
+            if "cls" in str(err):
+                self._logger.debug("cls parameter not supported (PaddleOCR 3.x detected)")
+                last_error = err
+            else:
+                raise
+        except RuntimeError as err:
+            self._logger.warning(
+                "RuntimeError with cls=True: %s. Will try fallback strategies.", 
+                str(err)[:100]
             )
-            raise
-        finally:
-            self._memory_monitor.log_memory_delta(mem_before_ocr, "after OCR")
-
+            last_error = err
+        
+        # Strategy 2: Try without cls parameter (PaddleOCR 3.x standard)
+        if ocr_results is None:
+            try:
+                self._logger.debug("Attempt 2: Calling PaddleOCR.ocr() without cls parameter...")
+                ocr_results = self._ocr_engine.ocr(image)
+                self._logger.debug("PaddleOCR.ocr() completed successfully (without cls)")
+            except RuntimeError as err:
+                self._logger.warning(
+                    "RuntimeError on full-size image: %s. Trying with reduced size...", 
+                    str(err)[:100]
+                )
+                last_error = err
+        
+        # Strategy 3: Try with 50% scaled image (reduces memory pressure)
+        if ocr_results is None and isinstance(last_error, RuntimeError):
+            try:
+                h, w = image.shape[:2]
+                scale_factor = 0.5
+                new_w, new_h = int(w * scale_factor), int(h * scale_factor)
+                self._logger.info(
+                    "Attempt 3: Downscaling image to 50%% (%dx%d -> %dx%d) to avoid RuntimeError",
+                    w, h, new_w, new_h
+                )
+                scaled_image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                ocr_results = self._ocr_engine.ocr(scaled_image)
+                self._logger.info("OCR succeeded with 50%% scaled image")
+                
+                # Scale coordinates back up (will be handled by caller if needed)
+                # Note: Coordinates in results will need to be scaled by 2.0
+                
+            except RuntimeError as err:
+                self._logger.warning(
+                    "RuntimeError even with 50%% scaling: %s. Trying 25%% scale...", 
+                    str(err)[:100]
+                )
+                last_error = err
+        
+        # Strategy 4: Last resort - try with 25% scaled image
+        if ocr_results is None and isinstance(last_error, RuntimeError):
+            try:
+                h, w = image.shape[:2]
+                scale_factor = 0.25
+                new_w, new_h = int(w * scale_factor), int(h * scale_factor)
+                self._logger.warning(
+                    "Attempt 4 (last resort): Downscaling to 25%% (%dx%d -> %dx%d)",
+                    w, h, new_w, new_h
+                )
+                scaled_image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                ocr_results = self._ocr_engine.ocr(scaled_image)
+                self._logger.warning(
+                    "OCR succeeded with 25%% scaled image (quality may be degraded)"
+                )
+            except Exception as err:
+                self._logger.error(
+                    "All OCR attempts failed, including 25%% scaling: %s",
+                    str(err)[:100]
+                )
+                last_error = err
+        
+        # Final error handling
+        if ocr_results is None:
+            self._memory_monitor.log_memory_delta(mem_before_ocr, "after OCR (failed)")
+            self._logger.error(
+                "PaddleOCR.ocr() failed after all retry attempts. Last error: %s",
+                type(last_error).__name__,
+                exc_info=last_error,
+            )
+            raise last_error if last_error else RuntimeError("OCR failed for unknown reason")
+        
+        self._memory_monitor.log_memory_delta(mem_before_ocr, "after OCR")
         return ocr_results
 
     def _log_ocr_structure(self, ocr_results: List[Any]) -> None:
@@ -313,6 +393,8 @@ class OCREngine:
         """
         if not self._settings.enable_parallel_processing:
             return False
+        if not self._settings.parallel_regions_enabled:
+            return False
         return len(regions) >= self._settings.parallel_min_regions_for_parallelization
 
     def _process_regions_sequential(
@@ -364,7 +446,7 @@ class OCREngine:
                         grid.num_cols,
                     )
                     table_processor = TableProcessor(
-                        self._settings, self._logger, self
+                        self._settings, self._logger, self, engine_pool=self._engine_pool
                     )
                     cells = table_processor.extract_cells(region_image, grid)
 
@@ -569,7 +651,7 @@ class OCREngine:
                     grid.num_cols,
                 )
                 table_processor = TableProcessor(
-                    self._settings, self._logger, self
+                    self._settings, self._logger, self, engine_pool=self._engine_pool
                 )
                 cells = table_processor.extract_cells(region_image, grid)
 

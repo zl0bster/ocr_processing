@@ -241,3 +241,4 @@ class TestFullPipeline:
         assert isinstance(extracted_data.get("defects"), list)
         assert isinstance(extracted_data.get("analysis"), dict)
 
+

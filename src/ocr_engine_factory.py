@@ -91,7 +91,7 @@ class OCREngineFactory:
         # Suppress PaddlePaddle warnings about ccache
         os.environ.setdefault('PADDLE_SILENT', '1')
         
-        # Build desired parameters
+        # Build desired parameters for PaddleOCR 3.x
         ocr_params = {
             'use_angle_cls': cls,  # Enable text angle classification if cls is True
             'lang': settings.ocr_language,
@@ -103,6 +103,13 @@ class OCREngineFactory:
         # Add GPU parameter only if enabled
         if settings.ocr_use_gpu:
             ocr_params['use_gpu'] = True
+        
+        # PaddleOCR 3.x specific: Add stability parameters
+        # These help prevent RuntimeError: Unknown exception
+        ocr_params.update({
+            'use_mp': False,  # Disable multiprocessing (can cause issues on Windows)
+            'total_process_num': 1,  # Single process for stability
+        })
 
         # Filter out unsupported parameters by checking PaddleOCR.__init__ signature
         try:
@@ -143,14 +150,28 @@ class OCREngineFactory:
         if supports_det_rec:
             # New version supports det/rec/cls parameters
             try:
+                logger.debug("Initializing with det=%s, rec=%s, cls=%s", det, rec, cls)
                 ocr_engine = PaddleOCR(det=det, rec=rec, cls=cls, **ocr_params)
             except Exception as e:
                 logger.warning(
-                    "Failed to initialize %s engine with det/rec/cls parameters: %s",
-                    engine_type, e
+                    "Failed to initialize %s engine with det/rec/cls parameters: %s. "
+                    "Falling back to standard initialization.",
+                    engine_type, str(e)[:200]
                 )
-                # Fallback to standard initialization
-                ocr_engine = PaddleOCR(**ocr_params)
+                # Fallback to standard initialization without det/rec/cls
+                try:
+                    ocr_engine = PaddleOCR(**ocr_params)
+                except Exception as e2:
+                    logger.error(
+                        "Standard initialization also failed: %s. Trying minimal params.",
+                        str(e2)[:200]
+                    )
+                    # Last resort: minimal parameters
+                    ocr_engine = PaddleOCR(
+                        lang=settings.ocr_language,
+                        show_log=False,
+                        use_mp=False
+                    )
         else:
             # Old version - use standard initialization (full engine only)
             logger.debug(
@@ -163,18 +184,27 @@ class OCREngineFactory:
                 # Try with minimal parameters if advanced ones fail
                 logger.warning(
                     "Failed to initialize %s engine with advanced parameters: %s",
-                    engine_type, e
+                    engine_type, str(e)[:200]
                 )
                 logger.info("Falling back to minimal PaddleOCR initialization...")
                 try:
-                    ocr_engine = PaddleOCR(lang=settings.ocr_language)
+                    # Try without stability params
+                    minimal_params = {
+                        'lang': settings.ocr_language,
+                        'show_log': False,
+                        'use_mp': False,
+                    }
+                    if settings.ocr_use_gpu:
+                        minimal_params['use_gpu'] = True
+                    ocr_engine = PaddleOCR(**minimal_params)
                 except Exception as e2:
                     logger.error(
-                        "Failed to initialize %s engine even with minimal parameters: %s",
-                        engine_type, e2
+                        "Failed to initialize %s engine even with minimal parameters: %s. "
+                        "Using bare defaults.",
+                        engine_type, str(e2)[:200]
                     )
-                    # Try with no parameters at all (will use defaults)
-                    ocr_engine = PaddleOCR()
+                    # Last resort: absolute bare minimum
+                    ocr_engine = PaddleOCR(lang=settings.ocr_language, use_mp=False)
         
         logger.info("PaddleOCR %s engine initialized successfully", engine_type)
         return ocr_engine

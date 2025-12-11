@@ -301,3 +301,4 @@ class TestOCREngineFactoryFallback:
         call_kwargs = mock_paddleocr.call_args[1] if mock_paddleocr.call_args[1] else {}
         assert result == mock_engine_instance
 
+

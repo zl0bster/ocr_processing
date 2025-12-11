@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     ocr_max_image_dimension: int = 3000  # Max dimension (width or height) for OCR processing
     ocr_det_limit_side_len: int = 2000   # PaddleOCR detection limit
     ocr_memory_reload_threshold_mb: int = 700  # Reload OCR engine if memory exceeds this (MB)
+    # OCR Engine Pool Settings
+    ocr_pool_enabled: bool = True  # Enable engine pooling for batch processing
+    ocr_pool_size: int = 2  # Number of engines in pool (1-4 recommended)
+    ocr_pool_timeout: float = 30.0  # Max seconds to wait for available engine
+    ocr_engine_memory_check_interval: int = 1  # Check memory every N files
+    ocr_engine_auto_restart_threshold: float = 0.8  # Restart at 80% of reload threshold
     enable_deskew: bool = True
     # Perspective correction parameters
     enable_perspective_correction: bool = True
@@ -73,16 +79,23 @@ class Settings(BaseSettings):
     table_cell_preprocess: bool = True  # apply cell-level preprocessing
     table_cell_min_width: int = 20  # skip cells smaller than this
     table_cell_min_height: int = 15
+    # Empty cell detection (skip OCR for blank cells)
+    table_enable_empty_cell_detection: bool = True  # Enable/disable empty cell detection
+    table_empty_edge_density_threshold: float = 0.01  # Max edge density for empty cells (ratio)
+    table_empty_white_pixel_threshold: float = 0.95  # Min white pixel ratio for empty cells
+    table_empty_variance_threshold: float = 100.0  # Max pixel variance for empty cells
+    table_empty_component_threshold: int = 2  # Max connected components for empty cells
     # Template-based detection (for known forms)
     table_template_file: Path = Path("config/templates/table_templates.json")
     table_use_template_fallback: bool = True
     # Parallel processing configuration
     enable_parallel_processing: bool = True
-    parallel_regions_workers: int = 4  # Number of workers for region processing
-    parallel_cells_workers: int = 6    # Number of workers for table cell processing
+    parallel_regions_enabled: bool = False  # Disable region parallelization (memory issues)
+    parallel_regions_workers: int = 2  # Number of workers for region processing
+    parallel_cells_workers: int = 4    # Number of workers for table cell processing
     parallel_use_separate_engines: bool = True  # Use det+rec engine split
     parallel_min_regions_for_parallelization: int = 2  # Min regions to trigger parallel mode
-    parallel_min_cells_for_parallelization: int = 10   # Min cells to trigger parallel mode
+    parallel_min_cells_for_parallelization: int = 4   # Min cells to trigger parallel mode
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

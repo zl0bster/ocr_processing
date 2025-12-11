@@ -76,6 +76,9 @@ class RegionOCRResult:
 # Global engine cache per worker process (initialized once per worker)
 _worker_recognition_engine: Optional[PaddleOCR] = None
 _worker_engine_params: Optional[EngineParams] = None
+_worker_cells_processed: int = 0
+_worker_memory_baseline_mb: float = 0.0
+_worker_last_memory_check_mb: float = 0.0
 
 
 def _image_to_bytes(image: np.ndarray) -> bytes:
@@ -113,6 +116,7 @@ def _get_or_create_recognition_engine(engine_params: EngineParams) -> PaddleOCR:
     """Get or create recognition engine for worker process.
 
     Engines are cached per worker process to avoid re-initialization.
+    Performs self-monitoring and restarts if memory exceeds threshold.
 
     Args:
         engine_params: Engine configuration parameters
@@ -121,6 +125,49 @@ def _get_or_create_recognition_engine(engine_params: EngineParams) -> PaddleOCR:
         Recognition-only PaddleOCR engine
     """
     global _worker_recognition_engine, _worker_engine_params
+    global _worker_cells_processed, _worker_memory_baseline_mb, _worker_last_memory_check_mb
+
+    # Check memory and restart if needed (every 10 cells processed)
+    if _worker_recognition_engine is not None and _worker_cells_processed > 0:
+        if _worker_cells_processed % 10 == 0:  # Check every 10 cells
+            try:
+                import psutil
+                import gc
+                
+                process = psutil.Process()
+                current_memory_mb = process.memory_info().rss / 1024 / 1024
+                _worker_last_memory_check_mb = current_memory_mb
+                
+                # Use 80% of typical reload threshold (700 MB default) = 560 MB
+                # Workers are lighter than full engines, so use lower threshold
+                restart_threshold_mb = 560.0
+                
+                if current_memory_mb > restart_threshold_mb:
+                    worker_logger = logging.getLogger(__name__)
+                    worker_logger.warning(
+                        "Worker memory (%.1f MB) exceeds threshold (%.1f MB). "
+                        "Performing self-restart...",
+                        current_memory_mb,
+                        restart_threshold_mb,
+                    )
+                    
+                    # Clear engine and run GC
+                    _worker_recognition_engine = None
+                    gc.collect()
+                    
+                    # Reset metrics
+                    _worker_cells_processed = 0
+                    _worker_memory_baseline_mb = process.memory_info().rss / 1024 / 1024
+                    
+                    worker_logger.info(
+                        "Worker engine restarted. Memory after restart: %.1f MB",
+                        _worker_memory_baseline_mb,
+                    )
+            except Exception as e:
+                # If memory monitoring fails, log but continue
+                logging.getLogger(__name__).debug(
+                    "Worker memory check failed: %s", e
+                )
 
     # Check if we need to create a new engine
     if (
@@ -155,6 +202,15 @@ def _get_or_create_recognition_engine(engine_params: EngineParams) -> PaddleOCR:
             finally:
                 sys.stderr = old_stderr
         _worker_engine_params = engine_params
+        
+        # Track baseline memory after initialization
+        try:
+            import psutil
+            process = psutil.Process()
+            _worker_memory_baseline_mb = process.memory_info().rss / 1024 / 1024
+            _worker_last_memory_check_mb = _worker_memory_baseline_mb
+        except Exception:
+            pass
 
     return _worker_recognition_engine
 
@@ -193,6 +249,10 @@ def recognize_cell_worker(
 
         # Get or create recognition engine
         rec_engine = _get_or_create_recognition_engine(engine_params)
+        
+        # Increment cells processed counter (for memory monitoring)
+        global _worker_cells_processed
+        _worker_cells_processed += 1
 
         # Run recognition
         # Note: For old PaddleOCR versions, we use full engine and extract only recognition results
@@ -440,6 +500,10 @@ def recognize_region_worker(
 
         # Get or create recognition engine
         rec_engine = _get_or_create_recognition_engine(engine_params)
+        
+        # Increment cells processed counter (for memory monitoring)
+        global _worker_cells_processed
+        _worker_cells_processed += 1
 
         # Run recognition
         # Note: For old PaddleOCR versions, we use full engine and extract only recognition results

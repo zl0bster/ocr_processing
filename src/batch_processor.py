@@ -14,6 +14,7 @@ from error_corrector import ErrorCorrector
 from field_validator import FieldValidator
 from form_extractor import FormExtractor
 from ocr_engine import OCREngine
+from ocr_engine_pool import OCREnginePool
 from preprocessor import ImagePreprocessor
 from region_detector import RegionDetector
 from utils.json_utils import convert_numpy_types
@@ -58,6 +59,23 @@ class BatchProcessor:
         self._settings = settings
         self._logger = logger
         self._memory_monitor = MemoryMonitor(logger)
+        
+        # Initialize OCR engine pool if enabled, otherwise use single engine
+        self._pool: Optional[OCREnginePool] = None
+        if self._settings.ocr_pool_enabled:
+            self._pool = OCREnginePool(
+                settings=self._settings,
+                logger=self._logger,
+            )
+            self._logger.info("OCR engine pool enabled for batch processing")
+        else:
+            self._logger.info("OCR engine pool disabled, using single engine mode")
+    
+    def close(self) -> None:
+        """Close the OCR engine pool and release resources."""
+        if self._pool is not None:
+            self._pool.close()
+            self._pool = None
 
     def process_directory(
         self,
@@ -162,191 +180,351 @@ class BatchProcessor:
         form_extractor = FormExtractor(settings=self._settings, logger=self._logger)
         region_detector = RegionDetector(settings=self._settings, logger=self._logger)
         
-        # Initialize OCR engine (will be reloaded if memory exceeds threshold)
-        ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
-        engine_reload_count = 0
-        
-        try:
-            for image_file in image_files:
-                self._logger.info("Processing %s...", image_file.name)
-                file_start = time.perf_counter()
-                file_mem_start = self._memory_monitor.log_memory(
-                    f"before {image_file.name}", 
-                    level="DEBUG"
-                )
-                
-                # Check memory and reload OCR engine if necessary
-                current_memory_mb = self._memory_monitor.get_memory_mb()
-                if current_memory_mb > self._settings.ocr_memory_reload_threshold_mb:
-                    self._logger.warning(
-                        "Memory usage (%.1f MB) exceeds threshold (%d MB). "
-                        "Reloading OCR engine to free memory...",
-                        current_memory_mb,
-                        self._settings.ocr_memory_reload_threshold_mb
+        # Use pool if enabled, otherwise create single engine
+        if self._pool is not None:
+            # Pool mode: engines are acquired/released per file
+            try:
+                for image_file in image_files:
+                    self._logger.info("Processing %s...", image_file.name)
+                    file_start = time.perf_counter()
+                    file_mem_start = self._memory_monitor.log_memory(
+                        f"before {image_file.name}", 
+                        level="DEBUG"
                     )
                     
-                    # Close old engine and create new one
-                    ocr_engine.close()
-                    gc.collect()
-                    mem_after_gc = self._memory_monitor.log_memory("after engine close + gc", level="INFO")
-                    
-                    ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
-                    engine_reload_count += 1
-                    mem_after_reload = self._memory_monitor.log_memory(
-                        f"after engine reload #{engine_reload_count}", 
-                        level="INFO"
-                    )
-                    self._logger.info(
-                        "OCR engine reloaded successfully (reload #%d). "
-                        "Memory freed: %.1f MB",
-                        engine_reload_count,
-                        current_memory_mb - mem_after_reload
-                    )
-                
-                try:
-                    # Step 1: Preprocessing
-                    preprocess_result = preprocessor.process(input_path=image_file)
-                    self._logger.info("  Step 1/5: Preprocessing completed in %.3f seconds. Output: %s",
-                                     preprocess_result.duration_seconds,
-                                     preprocess_result.output_path)
-                    if preprocess_result.deskew_angle is not None:
-                        self._logger.debug("  Deskew angle: %.3f degrees", preprocess_result.deskew_angle)
-                    
-                    # Step 2: OCR with shared engine (regional processing)
-                    try:
-                        # Detect regions
-                        preprocessed_image = cv2.imread(str(preprocess_result.output_path), cv2.IMREAD_COLOR)
-                        if preprocessed_image is None:
-                            raise ValueError(
-                                f"Unable to read preprocessed image '{preprocess_result.output_path}'"
+                    # Acquire engine from pool (automatically released after use)
+                    with self._pool.acquire() as ocr_engine:
+                        try:
+                            # Step 1: Preprocessing
+                            preprocess_result = preprocessor.process(input_path=image_file)
+                            self._logger.info("  Step 1/5: Preprocessing completed in %.3f seconds. Output: %s",
+                                             preprocess_result.duration_seconds,
+                                             preprocess_result.output_path)
+                            if preprocess_result.deskew_angle is not None:
+                                self._logger.debug("  Deskew angle: %.3f degrees", preprocess_result.deskew_angle)
+                            
+                            # Step 2: OCR with shared engine (regional processing)
+                            try:
+                                # Detect regions
+                                preprocessed_image = cv2.imread(str(preprocess_result.output_path), cv2.IMREAD_COLOR)
+                                if preprocessed_image is None:
+                                    raise ValueError(
+                                        f"Unable to read preprocessed image '{preprocess_result.output_path}'"
+                                    )
+                                
+                                regions = region_detector.detect_zones(preprocessed_image)
+                                self._logger.debug(
+                                    "  Region detector identified %d zones using method '%s'",
+                                    len(regions),
+                                    regions[0].detection_method if regions else "none",
+                                )
+                                
+                                # Process regions
+                                ocr_result = ocr_engine.process_regions(
+                                    image_path=preprocess_result.output_path,
+                                    regions=regions,
+                                )
+                                self._logger.info("  Step 2/5: OCR completed in %.3f seconds. Output: %s",
+                                                 ocr_result.duration_seconds,
+                                                 ocr_result.output_path)
+                                self._logger.info("  Found %d text regions (avg confidence: %.3f)",
+                                                 ocr_result.total_texts_found,
+                                                 ocr_result.average_confidence)
+                                
+                                # Детальное логирование результатов OCR
+                                self._logger.debug("OCR result details:")
+                                self._logger.debug("  Output path: %s", ocr_result.output_path)
+                                self._logger.debug("  Duration: %.3f seconds", ocr_result.duration_seconds)
+                                self._logger.debug("  Texts found: %d", ocr_result.total_texts_found)
+                                self._logger.debug("  Avg confidence: %.3f", ocr_result.average_confidence)
+                                self._logger.debug("  Low confidence count: %d", ocr_result.low_confidence_count)
+                                
+                                if ocr_result.total_texts_found == 0:
+                                    self._logger.warning("  ⚠ OCR found ZERO text regions - check preprocessing quality")
+                                
+                                if ocr_result.low_confidence_count > 0:
+                                    self._logger.warning("  %d text regions have low confidence",
+                                                        ocr_result.low_confidence_count)
+                            except Exception as ocr_error:
+                                self._logger.error(
+                                    "  Step 2/5: OCR FAILED - %s: %s",
+                                    type(ocr_error).__name__,
+                                    str(ocr_error)
+                                )
+                                raise  # Re-raise to be caught by outer exception handler
+                            
+                            # Step 3: Error correction
+                            correction_result = error_corrector.process(input_path=ocr_result.output_path)
+                            self._logger.info("  Step 3/5: Error correction completed in %.3f seconds. Output: %s",
+                                             correction_result.duration_seconds,
+                                             correction_result.output_path)
+                            self._logger.info("  Applied %d corrections (%.1f%%)",
+                                             correction_result.corrections_applied,
+                                             correction_result.correction_rate * 100)
+                            
+                            # Step 4: Field validation
+                            validation_result = field_validator.process(
+                                input_path=correction_result.output_path
                             )
-                        
-                        regions = region_detector.detect_zones(preprocessed_image)
-                        self._logger.debug(
-                            "  Region detector identified %d zones using method '%s'",
-                            len(regions),
-                            regions[0].detection_method if regions else "none",
-                        )
-                        
-                        # Process regions
-                        ocr_result = ocr_engine.process_regions(
-                            image_path=preprocess_result.output_path,
-                            regions=regions,
-                        )
-                        self._logger.info("  Step 2/5: OCR completed in %.3f seconds. Output: %s",
-                                         ocr_result.duration_seconds,
-                                         ocr_result.output_path)
-                        self._logger.info("  Found %d text regions (avg confidence: %.3f)",
-                                         ocr_result.total_texts_found,
-                                         ocr_result.average_confidence)
-                        
-                        # Детальное логирование результатов OCR
-                        self._logger.debug("OCR result details:")
-                        self._logger.debug("  Output path: %s", ocr_result.output_path)
-                        self._logger.debug("  Duration: %.3f seconds", ocr_result.duration_seconds)
-                        self._logger.debug("  Texts found: %d", ocr_result.total_texts_found)
-                        self._logger.debug("  Avg confidence: %.3f", ocr_result.average_confidence)
-                        self._logger.debug("  Low confidence count: %d", ocr_result.low_confidence_count)
-                        
-                        if ocr_result.total_texts_found == 0:
-                            self._logger.warning("  ⚠ OCR found ZERO text regions - check preprocessing quality")
-                        
-                        if ocr_result.low_confidence_count > 0:
-                            self._logger.warning("  %d text regions have low confidence",
-                                                ocr_result.low_confidence_count)
-                    except Exception as ocr_error:
-                        self._logger.error(
-                            "  Step 2/5: OCR FAILED - %s: %s",
-                            type(ocr_error).__name__,
-                            str(ocr_error)
-                        )
-                        raise  # Re-raise to be caught by outer exception handler
-                    
-                    # Step 3: Error correction
-                    correction_result = error_corrector.process(input_path=ocr_result.output_path)
-                    self._logger.info("  Step 3/5: Error correction completed in %.3f seconds. Output: %s",
-                                     correction_result.duration_seconds,
-                                     correction_result.output_path)
-                    self._logger.info("  Applied %d corrections (%.1f%%)",
-                                     correction_result.corrections_applied,
-                                     correction_result.correction_rate * 100)
-                    
-                    # Step 4: Field validation
-                    validation_result = field_validator.process(
-                        input_path=correction_result.output_path
+                            self._logger.info("  Step 4/5: Validation completed in %.3f seconds. Output: %s",
+                                             validation_result.duration_seconds,
+                                             validation_result.output_path)
+                            self._logger.info("  Validated %d/%d fields (%.1f%%)",
+                                             validation_result.validated_fields,
+                                             validation_result.total_fields,
+                                             validation_result.validation_rate * 100)
+                            if validation_result.failed_validations > 0:
+                                self._logger.warning("  %d validation failures detected",
+                                                    validation_result.failed_validations)
+                            
+                            # Step 5: Data extraction
+                            extraction_result = form_extractor.extract(
+                                ocr_json_path=validation_result.output_path
+                            )
+                            self._logger.info("  Step 5/5: Data extraction completed in %.3f seconds. Output: %s",
+                                             extraction_result.duration_seconds,
+                                             extraction_result.output_path)
+                            self._logger.info("  Extracted %d header fields, %d defect blocks, %d analysis rows",
+                                             extraction_result.header_fields_extracted,
+                                             extraction_result.defect_blocks_found,
+                                             extraction_result.analysis_rows_found)
+                            if extraction_result.mandatory_fields_missing > 0:
+                                self._logger.warning("  %d mandatory fields are missing",
+                                                    extraction_result.mandatory_fields_missing)
+                            
+                            file_duration = time.perf_counter() - file_start
+                            
+                            file_results.append(FileResult(
+                                filename=image_file.name,
+                                success=True,
+                                duration_seconds=file_duration,
+                                texts_found=ocr_result.total_texts_found,
+                                average_confidence=ocr_result.average_confidence,
+                                corrections_applied=correction_result.corrections_applied,
+                                fields_validated=validation_result.validated_fields,
+                                extraction_result_path=extraction_result.output_path
+                            ))
+                            
+                            self._logger.info("✓ %s completed in %.3f seconds", 
+                                             image_file.name, file_duration)
+                            
+                            # Log memory usage and cleanup
+                            self._memory_monitor.log_memory_delta(
+                                file_mem_start, 
+                                f"after {image_file.name}"
+                            )
+                            gc.collect()
+                            self._memory_monitor.log_memory("after gc.collect()", level="DEBUG")
+                            
+                        except Exception as e:
+                            file_duration = time.perf_counter() - file_start
+                            error_msg = str(e)
+                            
+                            file_results.append(FileResult(
+                                filename=image_file.name,
+                                success=False,
+                                duration_seconds=file_duration,
+                                error_message=error_msg
+                            ))
+                            
+                            self._logger.error("✗ %s failed: %s", image_file.name, error_msg)
+            finally:
+                # Log pool statistics
+                if self._pool is not None:
+                    pool_stats = self._pool.get_statistics()
+                    self._logger.info(
+                        "Pool statistics: Total engines: %d, "
+                        "Files processed: %d, Total restarts: %d",
+                        pool_stats.total_engines,
+                        pool_stats.total_files_processed,
+                        pool_stats.total_restarts,
                     )
-                    self._logger.info("  Step 4/5: Validation completed in %.3f seconds. Output: %s",
-                                     validation_result.duration_seconds,
-                                     validation_result.output_path)
-                    self._logger.info("  Validated %d/%d fields (%.1f%%)",
-                                     validation_result.validated_fields,
-                                     validation_result.total_fields,
-                                     validation_result.validation_rate * 100)
-                    if validation_result.failed_validations > 0:
-                        self._logger.warning("  %d validation failures detected",
-                                            validation_result.failed_validations)
-                    
-                    # Step 5: Data extraction
-                    extraction_result = form_extractor.extract(
-                        ocr_json_path=validation_result.output_path
-                    )
-                    self._logger.info("  Step 5/5: Data extraction completed in %.3f seconds. Output: %s",
-                                     extraction_result.duration_seconds,
-                                     extraction_result.output_path)
-                    self._logger.info("  Extracted %d header fields, %d defect blocks, %d analysis rows",
-                                     extraction_result.header_fields_extracted,
-                                     extraction_result.defect_blocks_found,
-                                     extraction_result.analysis_rows_found)
-                    if extraction_result.mandatory_fields_missing > 0:
-                        self._logger.warning("  %d mandatory fields are missing",
-                                            extraction_result.mandatory_fields_missing)
-                    
-                    file_duration = time.perf_counter() - file_start
-                    
-                    file_results.append(FileResult(
-                        filename=image_file.name,
-                        success=True,
-                        duration_seconds=file_duration,
-                        texts_found=ocr_result.total_texts_found,
-                        average_confidence=ocr_result.average_confidence,
-                        corrections_applied=correction_result.corrections_applied,
-                        fields_validated=validation_result.validated_fields,
-                        extraction_result_path=extraction_result.output_path
-                    ))
-                    
-                    self._logger.info("✓ %s completed in %.3f seconds", 
-                                     image_file.name, file_duration)
-                    
-                    # Log memory usage and cleanup
-                    self._memory_monitor.log_memory_delta(
-                        file_mem_start, 
-                        f"after {image_file.name}"
-                    )
-                    gc.collect()
-                    self._memory_monitor.log_memory("after gc.collect()", level="DEBUG")
-                    
-                except Exception as e:
-                    file_duration = time.perf_counter() - file_start
-                    error_msg = str(e)
-                    
-                    file_results.append(FileResult(
-                        filename=image_file.name,
-                        success=False,
-                        duration_seconds=file_duration,
-                        error_message=error_msg
-                    ))
-                    
-                    self._logger.error("✗ %s failed: %s", image_file.name, error_msg)
-        finally:
-            # Clean up OCR engine at the end
-            if ocr_engine is not None:
-                ocr_engine.close()
+        else:
+            # Single engine mode (backward compatibility)
+            ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
+            engine_reload_count = 0
             
-            if engine_reload_count > 0:
-                self._logger.info(
-                    "Total OCR engine reloads during batch: %d",
-                    engine_reload_count
-                )
+            try:
+                for image_file in image_files:
+                    self._logger.info("Processing %s...", image_file.name)
+                    file_start = time.perf_counter()
+                    file_mem_start = self._memory_monitor.log_memory(
+                        f"before {image_file.name}", 
+                        level="DEBUG"
+                    )
+                    
+                    # Check memory and reload OCR engine if necessary
+                    current_memory_mb = self._memory_monitor.get_memory_mb()
+                    if current_memory_mb > self._settings.ocr_memory_reload_threshold_mb:
+                        self._logger.warning(
+                            "Memory usage (%.1f MB) exceeds threshold (%d MB). "
+                            "Reloading OCR engine to free memory...",
+                            current_memory_mb,
+                            self._settings.ocr_memory_reload_threshold_mb
+                        )
+                        
+                        # Close old engine and create new one
+                        ocr_engine.close()
+                        gc.collect()
+                        mem_after_gc = self._memory_monitor.log_memory("after engine close + gc", level="INFO")
+                        
+                        ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
+                        engine_reload_count += 1
+                        mem_after_reload = self._memory_monitor.log_memory(
+                            f"after engine reload #{engine_reload_count}", 
+                            level="INFO"
+                        )
+                        self._logger.info(
+                            "OCR engine reloaded successfully (reload #%d). "
+                            "Memory freed: %.1f MB",
+                            engine_reload_count,
+                            current_memory_mb - mem_after_reload
+                        )
+                    
+                    try:
+                        # Step 1: Preprocessing
+                        preprocess_result = preprocessor.process(input_path=image_file)
+                        self._logger.info("  Step 1/5: Preprocessing completed in %.3f seconds. Output: %s",
+                                         preprocess_result.duration_seconds,
+                                         preprocess_result.output_path)
+                        if preprocess_result.deskew_angle is not None:
+                            self._logger.debug("  Deskew angle: %.3f degrees", preprocess_result.deskew_angle)
+                        
+                        # Step 2: OCR with shared engine (regional processing)
+                        try:
+                            # Detect regions
+                            preprocessed_image = cv2.imread(str(preprocess_result.output_path), cv2.IMREAD_COLOR)
+                            if preprocessed_image is None:
+                                raise ValueError(
+                                    f"Unable to read preprocessed image '{preprocess_result.output_path}'"
+                                )
+                            
+                            regions = region_detector.detect_zones(preprocessed_image)
+                            self._logger.debug(
+                                "  Region detector identified %d zones using method '%s'",
+                                len(regions),
+                                regions[0].detection_method if regions else "none",
+                            )
+                            
+                            # Process regions
+                            ocr_result = ocr_engine.process_regions(
+                                image_path=preprocess_result.output_path,
+                                regions=regions,
+                            )
+                            self._logger.info("  Step 2/5: OCR completed in %.3f seconds. Output: %s",
+                                             ocr_result.duration_seconds,
+                                             ocr_result.output_path)
+                            self._logger.info("  Found %d text regions (avg confidence: %.3f)",
+                                             ocr_result.total_texts_found,
+                                             ocr_result.average_confidence)
+                            
+                            # Детальное логирование результатов OCR
+                            self._logger.debug("OCR result details:")
+                            self._logger.debug("  Output path: %s", ocr_result.output_path)
+                            self._logger.debug("  Duration: %.3f seconds", ocr_result.duration_seconds)
+                            self._logger.debug("  Texts found: %d", ocr_result.total_texts_found)
+                            self._logger.debug("  Avg confidence: %.3f", ocr_result.average_confidence)
+                            self._logger.debug("  Low confidence count: %d", ocr_result.low_confidence_count)
+                            
+                            if ocr_result.total_texts_found == 0:
+                                self._logger.warning("  ⚠ OCR found ZERO text regions - check preprocessing quality")
+                            
+                            if ocr_result.low_confidence_count > 0:
+                                self._logger.warning("  %d text regions have low confidence",
+                                                    ocr_result.low_confidence_count)
+                        except Exception as ocr_error:
+                            self._logger.error(
+                                "  Step 2/5: OCR FAILED - %s: %s",
+                                type(ocr_error).__name__,
+                                str(ocr_error)
+                            )
+                            raise  # Re-raise to be caught by outer exception handler
+                        
+                        # Step 3: Error correction
+                        correction_result = error_corrector.process(input_path=ocr_result.output_path)
+                        self._logger.info("  Step 3/5: Error correction completed in %.3f seconds. Output: %s",
+                                         correction_result.duration_seconds,
+                                         correction_result.output_path)
+                        self._logger.info("  Applied %d corrections (%.1f%%)",
+                                         correction_result.corrections_applied,
+                                         correction_result.correction_rate * 100)
+                        
+                        # Step 4: Field validation
+                        validation_result = field_validator.process(
+                            input_path=correction_result.output_path
+                        )
+                        self._logger.info("  Step 4/5: Validation completed in %.3f seconds. Output: %s",
+                                         validation_result.duration_seconds,
+                                         validation_result.output_path)
+                        self._logger.info("  Validated %d/%d fields (%.1f%%)",
+                                         validation_result.validated_fields,
+                                         validation_result.total_fields,
+                                         validation_result.validation_rate * 100)
+                        if validation_result.failed_validations > 0:
+                            self._logger.warning("  %d validation failures detected",
+                                                validation_result.failed_validations)
+                        
+                        # Step 5: Data extraction
+                        extraction_result = form_extractor.extract(
+                            ocr_json_path=validation_result.output_path
+                        )
+                        self._logger.info("  Step 5/5: Data extraction completed in %.3f seconds. Output: %s",
+                                         extraction_result.duration_seconds,
+                                         extraction_result.output_path)
+                        self._logger.info("  Extracted %d header fields, %d defect blocks, %d analysis rows",
+                                         extraction_result.header_fields_extracted,
+                                         extraction_result.defect_blocks_found,
+                                         extraction_result.analysis_rows_found)
+                        if extraction_result.mandatory_fields_missing > 0:
+                            self._logger.warning("  %d mandatory fields are missing",
+                                                extraction_result.mandatory_fields_missing)
+                        
+                        file_duration = time.perf_counter() - file_start
+                        
+                        file_results.append(FileResult(
+                            filename=image_file.name,
+                            success=True,
+                            duration_seconds=file_duration,
+                            texts_found=ocr_result.total_texts_found,
+                            average_confidence=ocr_result.average_confidence,
+                            corrections_applied=correction_result.corrections_applied,
+                            fields_validated=validation_result.validated_fields,
+                            extraction_result_path=extraction_result.output_path
+                        ))
+                        
+                        self._logger.info("✓ %s completed in %.3f seconds", 
+                                         image_file.name, file_duration)
+                        
+                        # Log memory usage and cleanup
+                        self._memory_monitor.log_memory_delta(
+                            file_mem_start, 
+                            f"after {image_file.name}"
+                        )
+                        gc.collect()
+                        self._memory_monitor.log_memory("after gc.collect()", level="DEBUG")
+                        
+                    except Exception as e:
+                        file_duration = time.perf_counter() - file_start
+                        error_msg = str(e)
+                        
+                        file_results.append(FileResult(
+                            filename=image_file.name,
+                            success=False,
+                            duration_seconds=file_duration,
+                            error_message=error_msg
+                        ))
+                        
+                        self._logger.error("✗ %s failed: %s", image_file.name, error_msg)
+            finally:
+                # Clean up OCR engine at the end
+                if ocr_engine is not None:
+                    ocr_engine.close()
+                
+                if engine_reload_count > 0:
+                    self._logger.info(
+                        "Total OCR engine reloads during batch: %d",
+                        engine_reload_count
+                    )
         
         # Final memory report
         self._logger.info("=== Batch processing completed ===")
@@ -360,101 +538,171 @@ class BatchProcessor:
         
         initial_memory = self._memory_monitor.log_memory("OCR batch start", level="INFO")
         
-        # Initialize OCR engine (will be reloaded if memory exceeds threshold)
-        ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
-        engine_reload_count = 0
-        
-        try:
-            for image_file in image_files:
-                self._logger.info("Processing %s...", image_file.name)
-                file_start = time.perf_counter()
-                file_mem_start = self._memory_monitor.log_memory(
-                    f"before {image_file.name}", 
-                    level="DEBUG"
-                )
-                
-                # Check memory and reload OCR engine if necessary
-                current_memory_mb = self._memory_monitor.get_memory_mb()
-                if current_memory_mb > self._settings.ocr_memory_reload_threshold_mb:
-                    self._logger.warning(
-                        "Memory usage (%.1f MB) exceeds threshold (%d MB). "
-                        "Reloading OCR engine to free memory...",
-                        current_memory_mb,
-                        self._settings.ocr_memory_reload_threshold_mb
+        # Use pool if enabled, otherwise create single engine
+        if self._pool is not None:
+            # Pool mode: engines are acquired/released per file
+            try:
+                for image_file in image_files:
+                    self._logger.info("Processing %s...", image_file.name)
+                    file_start = time.perf_counter()
+                    file_mem_start = self._memory_monitor.log_memory(
+                        f"before {image_file.name}", 
+                        level="DEBUG"
                     )
                     
-                    # Close old engine and create new one
-                    ocr_engine.close()
-                    gc.collect()
-                    mem_after_gc = self._memory_monitor.log_memory("after engine close + gc", level="INFO")
-                    
-                    ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
-                    engine_reload_count += 1
-                    mem_after_reload = self._memory_monitor.log_memory(
-                        f"after engine reload #{engine_reload_count}", 
-                        level="INFO"
-                    )
+                    # Acquire engine from pool (automatically released after use)
+                    with self._pool.acquire() as ocr_engine:
+                        try:
+                            ocr_result = ocr_engine.process(input_path=image_file)
+                            self._logger.info("  OCR completed in %.3f seconds. Output: %s",
+                                             ocr_result.duration_seconds,
+                                             ocr_result.output_path)
+                            self._logger.info("  Found %d text regions (avg confidence: %.3f)",
+                                             ocr_result.total_texts_found,
+                                             ocr_result.average_confidence)
+                            if ocr_result.low_confidence_count > 0:
+                                self._logger.warning("  %d regions with low confidence",
+                                                    ocr_result.low_confidence_count)
+                            file_duration = time.perf_counter() - file_start
+                            
+                            file_results.append(FileResult(
+                                filename=image_file.name,
+                                success=True,
+                                duration_seconds=file_duration,
+                                texts_found=ocr_result.total_texts_found,
+                                average_confidence=ocr_result.average_confidence
+                            ))
+                            
+                            self._logger.info("✓ %s completed in %.3f seconds", 
+                                             image_file.name, file_duration)
+                            
+                            # Log memory usage and cleanup
+                            self._memory_monitor.log_memory_delta(
+                                file_mem_start, 
+                                f"after {image_file.name}"
+                            )
+                            gc.collect()
+                            self._memory_monitor.log_memory("after gc.collect()", level="DEBUG")
+                            
+                        except Exception as e:
+                            file_duration = time.perf_counter() - file_start
+                            error_msg = str(e)
+                            
+                            file_results.append(FileResult(
+                                filename=image_file.name,
+                                success=False,
+                                duration_seconds=file_duration,
+                                error_message=error_msg
+                            ))
+                            
+                            self._logger.error("✗ %s failed: %s", image_file.name, error_msg)
+            finally:
+                # Log pool statistics
+                if self._pool is not None:
+                    pool_stats = self._pool.get_statistics()
                     self._logger.info(
-                        "OCR engine reloaded successfully (reload #%d). "
-                        "Memory freed: %.1f MB",
-                        engine_reload_count,
-                        current_memory_mb - mem_after_reload
+                        "Pool statistics: Total engines: %d, "
+                        "Files processed: %d, Total restarts: %d",
+                        pool_stats.total_engines,
+                        pool_stats.total_files_processed,
+                        pool_stats.total_restarts,
                     )
-                
-                try:
-                    ocr_result = ocr_engine.process(input_path=image_file)
-                    self._logger.info("  OCR completed in %.3f seconds. Output: %s",
-                                     ocr_result.duration_seconds,
-                                     ocr_result.output_path)
-                    self._logger.info("  Found %d text regions (avg confidence: %.3f)",
-                                     ocr_result.total_texts_found,
-                                     ocr_result.average_confidence)
-                    if ocr_result.low_confidence_count > 0:
-                        self._logger.warning("  %d regions with low confidence",
-                                            ocr_result.low_confidence_count)
-                    file_duration = time.perf_counter() - file_start
-                    
-                    file_results.append(FileResult(
-                        filename=image_file.name,
-                        success=True,
-                        duration_seconds=file_duration,
-                        texts_found=ocr_result.total_texts_found,
-                        average_confidence=ocr_result.average_confidence
-                    ))
-                    
-                    self._logger.info("✓ %s completed in %.3f seconds", 
-                                     image_file.name, file_duration)
-                    
-                    # Log memory usage and cleanup
-                    self._memory_monitor.log_memory_delta(
-                        file_mem_start, 
-                        f"after {image_file.name}"
-                    )
-                    gc.collect()
-                    self._memory_monitor.log_memory("after gc.collect()", level="DEBUG")
-                    
-                except Exception as e:
-                    file_duration = time.perf_counter() - file_start
-                    error_msg = str(e)
-                    
-                    file_results.append(FileResult(
-                        filename=image_file.name,
-                        success=False,
-                        duration_seconds=file_duration,
-                        error_message=error_msg
-                    ))
-                    
-                    self._logger.error("✗ %s failed: %s", image_file.name, error_msg)
-        finally:
-            # Clean up OCR engine at the end
-            if ocr_engine is not None:
-                ocr_engine.close()
+        else:
+            # Single engine mode (backward compatibility)
+            ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
+            engine_reload_count = 0
             
-            if engine_reload_count > 0:
-                self._logger.info(
-                    "Total OCR engine reloads during batch: %d",
-                    engine_reload_count
-                )
+            try:
+                for image_file in image_files:
+                    self._logger.info("Processing %s...", image_file.name)
+                    file_start = time.perf_counter()
+                    file_mem_start = self._memory_monitor.log_memory(
+                        f"before {image_file.name}", 
+                        level="DEBUG"
+                    )
+                    
+                    # Check memory and reload OCR engine if necessary
+                    current_memory_mb = self._memory_monitor.get_memory_mb()
+                    if current_memory_mb > self._settings.ocr_memory_reload_threshold_mb:
+                        self._logger.warning(
+                            "Memory usage (%.1f MB) exceeds threshold (%d MB). "
+                            "Reloading OCR engine to free memory...",
+                            current_memory_mb,
+                            self._settings.ocr_memory_reload_threshold_mb
+                        )
+                        
+                        # Close old engine and create new one
+                        ocr_engine.close()
+                        gc.collect()
+                        mem_after_gc = self._memory_monitor.log_memory("after engine close + gc", level="INFO")
+                        
+                        ocr_engine = OCREngine(settings=self._settings, logger=self._logger)
+                        engine_reload_count += 1
+                        mem_after_reload = self._memory_monitor.log_memory(
+                            f"after engine reload #{engine_reload_count}", 
+                            level="INFO"
+                        )
+                        self._logger.info(
+                            "OCR engine reloaded successfully (reload #%d). "
+                            "Memory freed: %.1f MB",
+                            engine_reload_count,
+                            current_memory_mb - mem_after_reload
+                        )
+                    
+                    try:
+                        ocr_result = ocr_engine.process(input_path=image_file)
+                        self._logger.info("  OCR completed in %.3f seconds. Output: %s",
+                                         ocr_result.duration_seconds,
+                                         ocr_result.output_path)
+                        self._logger.info("  Found %d text regions (avg confidence: %.3f)",
+                                         ocr_result.total_texts_found,
+                                         ocr_result.average_confidence)
+                        if ocr_result.low_confidence_count > 0:
+                            self._logger.warning("  %d regions with low confidence",
+                                                ocr_result.low_confidence_count)
+                        file_duration = time.perf_counter() - file_start
+                        
+                        file_results.append(FileResult(
+                            filename=image_file.name,
+                            success=True,
+                            duration_seconds=file_duration,
+                            texts_found=ocr_result.total_texts_found,
+                            average_confidence=ocr_result.average_confidence
+                        ))
+                        
+                        self._logger.info("✓ %s completed in %.3f seconds", 
+                                         image_file.name, file_duration)
+                        
+                        # Log memory usage and cleanup
+                        self._memory_monitor.log_memory_delta(
+                            file_mem_start, 
+                            f"after {image_file.name}"
+                        )
+                        gc.collect()
+                        self._memory_monitor.log_memory("after gc.collect()", level="DEBUG")
+                        
+                    except Exception as e:
+                        file_duration = time.perf_counter() - file_start
+                        error_msg = str(e)
+                        
+                        file_results.append(FileResult(
+                            filename=image_file.name,
+                            success=False,
+                            duration_seconds=file_duration,
+                            error_message=error_msg
+                        ))
+                        
+                        self._logger.error("✗ %s failed: %s", image_file.name, error_msg)
+            finally:
+                # Clean up OCR engine at the end
+                if ocr_engine is not None:
+                    ocr_engine.close()
+                
+                if engine_reload_count > 0:
+                    self._logger.info(
+                        "Total OCR engine reloads during batch: %d",
+                        engine_reload_count
+                    )
         
         # Final memory report
         self._memory_monitor.log_memory_delta(initial_memory, "OCR batch total")

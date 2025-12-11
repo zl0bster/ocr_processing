@@ -39,3 +39,4 @@ def create_rotated_image(image: np.ndarray, angle: float) -> np.ndarray:
     rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
     return cv2.warpAffine(image, rotation_matrix, (width, height))
 
+

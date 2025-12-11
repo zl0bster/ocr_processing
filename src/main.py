@@ -391,28 +391,32 @@ def _run_batch(batch_dir: Path, output_path: Optional[str], mode: str, settings:
     output_path_obj = Path(output_path) if output_path else None
     batch_processor = BatchProcessor(settings=settings, logger=logger)
     
-    result = batch_processor.process_directory(
-        input_dir=batch_dir,
-        output_dir=output_path_obj,
-        mode=mode
-    )
-    
-    # Log final results
-    logger.info("=== Batch Processing Complete ===")
-    logger.info("Total files processed: %d", result.total_files)
-    logger.info("Successful: %d", result.successful_files)
-    logger.info("Failed: %d", result.failed_files)
-    logger.info("Total time: %.3f seconds", result.total_duration_seconds)
-    
-    if result.total_files > 0:
-        logger.info("Average time per file: %.3f seconds", 
-                   result.total_duration_seconds / result.total_files)
-    
-    if result.summary_path:
-        logger.info("Batch summary saved to: %s", result.summary_path)
-    
-    # Return error code if any files failed
-    return 1 if result.failed_files > 0 else 0
+    try:
+        result = batch_processor.process_directory(
+            input_dir=batch_dir,
+            output_dir=output_path_obj,
+            mode=mode
+        )
+        
+        # Log final results
+        logger.info("=== Batch Processing Complete ===")
+        logger.info("Total files processed: %d", result.total_files)
+        logger.info("Successful: %d", result.successful_files)
+        logger.info("Failed: %d", result.failed_files)
+        logger.info("Total time: %.3f seconds", result.total_duration_seconds)
+        
+        if result.total_files > 0:
+            logger.info("Average time per file: %.3f seconds", 
+                       result.total_duration_seconds / result.total_files)
+        
+        if result.summary_path:
+            logger.info("Batch summary saved to: %s", result.summary_path)
+        
+        # Return error code if any files failed
+        return 1 if result.failed_files > 0 else 0
+    finally:
+        # Clean up pool resources
+        batch_processor.close()
 
 
 if __name__ == "__main__":

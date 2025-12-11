@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import logging
 import time
@@ -44,6 +44,7 @@ class TableProcessor:
         settings: Settings,
         logger: logging.Logger,
         ocr_engine: Any,  # OCREngine instance
+        engine_pool: Optional[Any] = None,  # OCREnginePool instance
     ):
         """Initialize table processor.
 
@@ -51,10 +52,12 @@ class TableProcessor:
             settings: Application settings
             logger: Logger instance
             ocr_engine: OCREngine instance for cell-level OCR
+            engine_pool: Optional OCR engine pool for parallel processing
         """
         self._settings = settings
         self._logger = logger
         self._ocr_engine = ocr_engine
+        self._engine_pool = engine_pool
 
     def extract_cells(
         self,
@@ -94,6 +97,9 @@ class TableProcessor:
         """
         if not self._settings.enable_parallel_processing:
             return False
+        # Parallel processing requires engine pool
+        if self._engine_pool is None:
+            return False
         cell_count = grid.num_rows * grid.num_cols
         return cell_count >= self._settings.parallel_min_cells_for_parallelization
 
@@ -103,7 +109,10 @@ class TableProcessor:
         grid: TableGrid,
         column_mapping: Optional[Dict[int, str]] = None,
     ) -> List[TableCell]:
-        """Extract cells using parallel processing.
+        """Extract cells using parallel processing with engine pool.
+
+        Uses ThreadPoolExecutor to process cells in parallel, acquiring engines
+        from the pool as needed. This avoids creating new OCR engines in workers.
 
         Args:
             image: Original (not binarized) table region
@@ -113,6 +122,8 @@ class TableProcessor:
         Returns:
             List of extracted TableCell objects
         """
+        from concurrent.futures import ThreadPoolExecutor
+        
         start_time = time.perf_counter()
         height, width = image.shape[:2]
 
@@ -122,16 +133,16 @@ class TableProcessor:
 
         total_cells = (len(row_boundaries) - 1) * (len(col_boundaries) - 1)
         self._logger.info(
-            "Extracting %d cells in parallel (%d rows × %d columns)",
+            "Extracting %d cells using engine pool (%d rows × %d columns)",
             total_cells,
             len(row_boundaries) - 1,
             len(col_boundaries) - 1,
         )
 
-        # Prepare all cell tasks
-        tasks: List[CellOCRTask] = []
-        task_indices: List[Tuple[int, int]] = []  # Track (row_idx, col_idx) for each task
-
+        # Prepare all cell data (no need for pickling with threads)
+        cell_tasks = []
+        empty_cells: List[TableCell] = []  # Store empty cells immediately
+        
         for row_idx in range(len(row_boundaries) - 1):
             for col_idx in range(len(col_boundaries) - 1):
                 # Apply margin
@@ -162,68 +173,72 @@ class TableProcessor:
                 if self._settings.table_cell_preprocess:
                     cell_image = self._preprocess_cell(cell_image)
 
-                # Convert to bytes for pickling
-                from parallel_ocr_worker import _image_to_bytes
-                cell_image_bytes = _image_to_bytes(cell_image)
-
                 # Get field name from mapping
                 field_name = column_mapping.get(col_idx) if column_mapping else None
 
-                task = CellOCRTask(
-                    cell_image_bytes=cell_image_bytes,
-                    row_idx=row_idx,
-                    col_idx=col_idx,
-                    x_start=x1,
-                    y_start=y1,
-                    x_end=x2,
-                    y_end=y2,
-                    field_name=field_name,
-                )
-                tasks.append(task)
-                task_indices.append((row_idx, col_idx))
+                # Check if cell is empty before adding to OCR tasks
+                if self._is_cell_empty(cell_image):
+                    # Create empty cell result immediately, skip OCR
+                    empty_cells.append(
+                        TableCell(
+                            row_idx=row_idx,
+                            col_idx=col_idx,
+                            x_start=x1,
+                            y_start=y1,
+                            x_end=x2,
+                            y_end=y2,
+                            text="",
+                            confidence=1.0,  # High confidence for empty detection
+                            field_name=field_name,
+                        )
+                    )
+                    continue
 
-        if not tasks:
+                cell_tasks.append({
+                    'cell_image': cell_image,
+                    'row_idx': row_idx,
+                    'col_idx': col_idx,
+                    'x_start': x1,
+                    'y_start': y1,
+                    'x_end': x2,
+                    'y_end': y2,
+                    'field_name': field_name,
+                })
+
+        if not cell_tasks:
             self._logger.warning("No valid cells to process")
             return []
 
-        # Process cells in parallel
-        engine_params = create_engine_params(self._settings)
-        cells: List[TableCell] = []
-
+        # Process cells in parallel using thread pool + engine pool
+        # Start with empty cells that were detected
+        cells: List[TableCell] = empty_cells.copy()
+        
         try:
-            from parallel_ocr_worker import recognize_cell_worker
-
-            with ProcessPoolExecutor(
-                max_workers=self._settings.parallel_cells_workers
-            ) as executor:
+            # Use min of pool size and parallel_cells_workers
+            num_workers = min(
+                self._engine_pool._pool_size,
+                self._settings.parallel_cells_workers
+            )
+            
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 # Submit all tasks
                 future_to_task = {
-                    executor.submit(recognize_cell_worker, task, engine_params): task
-                    for task in tasks
+                    executor.submit(self._process_cell_with_pool, task): task
+                    for task in cell_tasks
                 }
 
                 # Collect results as they complete
                 for future in as_completed(future_to_task):
                     task = future_to_task[future]
                     try:
-                        result: CellOCRResult = future.result()
-                        cell = TableCell(
-                            row_idx=result.row_idx,
-                            col_idx=result.col_idx,
-                            x_start=result.x_start,
-                            y_start=result.y_start,
-                            x_end=result.x_end,
-                            y_end=result.y_end,
-                            text=result.text,
-                            confidence=result.confidence,
-                            field_name=result.field_name,
-                        )
-                        cells.append(cell)
+                        result = future.result()
+                        if result:
+                            cells.append(result)
                     except Exception as e:
                         self._logger.warning(
                             "Cell OCR failed for cell [%d,%d]: %s",
-                            task.row_idx,
-                            task.col_idx,
+                            task['row_idx'],
+                            task['col_idx'],
                             e,
                         )
 
@@ -238,16 +253,139 @@ class TableProcessor:
         avg_confidence = (
             sum(c.confidence for c in cells) / len(cells) if cells else 0.0
         )
+        
+        # Calculate empty cell statistics
+        empty_count = len(empty_cells)
+        total_processed = len(cells)
+        empty_percentage = (empty_count / total_processed * 100) if total_processed > 0 else 0.0
+        
+        # Estimate time saved (assuming ~100ms per empty cell OCR)
+        estimated_ocr_time_per_cell = 0.1  # seconds
+        estimated_time_saved = empty_count * estimated_ocr_time_per_cell
 
-        self._logger.info(
-            "Extracted %d cells in parallel (%.3fs, %d workers, avg confidence: %.3f)",
-            len(cells),
-            duration,
-            self._settings.parallel_cells_workers,
-            avg_confidence,
-        )
+        if empty_count > 0:
+            self._logger.info(
+                "Extracted %d cells using pool (%.3fs, %d workers, avg confidence: %.3f, "
+                "%d empty skipped %.1f%%, saved ~%.1fs)",
+                total_processed,
+                duration,
+                num_workers,
+                avg_confidence,
+                empty_count,
+                empty_percentage,
+                estimated_time_saved,
+            )
+        else:
+            self._logger.info(
+                "Extracted %d cells using pool (%.3fs, %d workers, avg confidence: %.3f)",
+                total_processed,
+                duration,
+                num_workers,
+                avg_confidence,
+            )
 
         return cells
+    
+    def _process_cell_with_pool(self, task: Dict[str, Any]) -> Optional[TableCell]:
+        """Process single cell using engine from pool.
+        
+        Args:
+            task: Dictionary with cell data and metadata
+            
+        Returns:
+            TableCell or None if processing failed
+        """
+        try:
+            # Double-check if cell is empty (defensive check)
+            # This should rarely happen since we check before adding to tasks
+            if self._is_cell_empty(task['cell_image']):
+                return TableCell(
+                    row_idx=task['row_idx'],
+                    col_idx=task['col_idx'],
+                    x_start=task['x_start'],
+                    y_start=task['y_start'],
+                    x_end=task['x_end'],
+                    y_end=task['y_end'],
+                    text="",
+                    confidence=1.0,
+                    field_name=task['field_name'],
+                )
+            
+            # Acquire engine from pool (blocks if none available)
+            with self._engine_pool.acquire() as ocr_engine:
+                # Use the engine's internal OCR method
+                text, confidence = self._ocr_cell_with_engine(
+                    task['cell_image'],
+                    ocr_engine
+                )
+                
+                return TableCell(
+                    row_idx=task['row_idx'],
+                    col_idx=task['col_idx'],
+                    x_start=task['x_start'],
+                    y_start=task['y_start'],
+                    x_end=task['x_end'],
+                    y_end=task['y_end'],
+                    text=text,
+                    confidence=confidence,
+                    field_name=task['field_name'],
+                )
+        except Exception as e:
+            self._logger.warning(
+                "Failed to process cell [%d,%d] with pool: %s",
+                task['row_idx'],
+                task['col_idx'],
+                e,
+            )
+            return None
+    
+    def _ocr_cell_with_engine(
+        self, 
+        cell_image: np.ndarray, 
+        ocr_engine: Any
+    ) -> Tuple[str, float]:
+        """Run OCR on cell using provided engine.
+        
+        Args:
+            cell_image: Preprocessed cell image
+            ocr_engine: SelfMonitoringOCREngine instance from pool
+            
+        Returns:
+            (text, confidence) tuple
+        """
+        try:
+            # Access the underlying OCREngine
+            engine = ocr_engine._engine if hasattr(ocr_engine, '_engine') else ocr_engine
+            
+            # Resize if needed
+            prepared_image, scale = engine._resize_for_ocr(cell_image)
+            
+            # Run OCR
+            ocr_results = engine._run_paddle_ocr(prepared_image)
+            
+            # Process results
+            detections = engine._process_ocr_results(
+                ocr_results, scale=scale if scale > 0 else 1.0
+            )
+            
+            if not detections:
+                return "", 0.0
+            
+            # Combine all detections
+            texts = [d.text for d in detections if d.text.strip()]
+            confidences = [d.confidence for d in detections if d.text.strip()]
+            
+            if not texts:
+                return "", 0.0
+            
+            combined_text = " ".join(texts)
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+            
+            return combined_text.strip(), avg_confidence
+            
+        except Exception as e:
+            self._logger.debug("OCR failed for cell: %s", e)
+            return "", 0.0
 
     def _extract_cells_sequential(
         self,
@@ -280,6 +418,7 @@ class TableProcessor:
         )
 
         # Extract each cell
+        empty_count = 0
         for row_idx in range(len(row_boundaries) - 1):
             for col_idx in range(len(col_boundaries) - 1):
                 cell = self._extract_single_cell(
@@ -294,18 +433,41 @@ class TableProcessor:
                 )
                 if cell:
                     cells.append(cell)
+                    # Count empty cells (text is empty and confidence is 1.0)
+                    if cell.text == "" and cell.confidence == 1.0:
+                        empty_count += 1
 
         duration = time.perf_counter() - start_time
         avg_confidence = (
             sum(c.confidence for c in cells) / len(cells) if cells else 0.0
         )
+        
+        # Calculate empty cell statistics
+        total_processed = len(cells)
+        empty_percentage = (empty_count / total_processed * 100) if total_processed > 0 else 0.0
+        
+        # Estimate time saved (assuming ~100ms per empty cell OCR)
+        estimated_ocr_time_per_cell = 0.1  # seconds
+        estimated_time_saved = empty_count * estimated_ocr_time_per_cell
 
-        self._logger.info(
-            "Extracted %d cells sequentially (%.3fs, avg confidence: %.3f)",
-            len(cells),
-            duration,
-            avg_confidence,
-        )
+        if empty_count > 0:
+            self._logger.info(
+                "Extracted %d cells sequentially (%.3fs, avg confidence: %.3f, "
+                "%d empty skipped %.1f%%, saved ~%.1fs)",
+                total_processed,
+                duration,
+                avg_confidence,
+                empty_count,
+                empty_percentage,
+                estimated_time_saved,
+            )
+        else:
+            self._logger.info(
+                "Extracted %d cells sequentially (%.3fs, avg confidence: %.3f)",
+                total_processed,
+                duration,
+                avg_confidence,
+            )
 
         return cells
 
@@ -399,6 +561,22 @@ class TableProcessor:
         if self._settings.table_cell_preprocess:
             cell_image = self._preprocess_cell(cell_image)
 
+        # Check if cell is empty before OCR
+        if self._is_cell_empty(cell_image):
+            # Return empty cell result without OCR processing
+            field_name = column_mapping.get(col_idx) if column_mapping else None
+            return TableCell(
+                row_idx=row_idx,
+                col_idx=col_idx,
+                x_start=x1,
+                y_start=y1,
+                x_end=x2,
+                y_end=y2,
+                text="",
+                confidence=1.0,  # High confidence for empty detection
+                field_name=field_name,
+            )
+
         # Run OCR on cell
         text, confidence = self._ocr_cell(cell_image)
 
@@ -416,6 +594,78 @@ class TableProcessor:
             confidence=confidence,
             field_name=field_name,
         )
+
+    def _is_cell_empty(self, cell_image: np.ndarray) -> bool:
+        """Fast check if cell image is empty using CV techniques.
+        
+        Uses multiple criteria to determine if cell is empty:
+        1. Pixel intensity variance (low variance = uniform/empty)
+        2. White pixel ratio (high white ratio = empty)
+        3. Edge density (few edges = empty)
+        4. Connected components count (few components = empty)
+        
+        Args:
+            cell_image: Cell ROI image (can be BGR or grayscale)
+            
+        Returns:
+            True if cell appears empty, False otherwise
+        """
+        if not self._settings.table_enable_empty_cell_detection:
+            return False
+        
+        try:
+            # Convert to grayscale if needed
+            if cell_image.ndim == 3:
+                gray = cv2.cvtColor(cell_image, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = cell_image.copy()
+            
+            height, width = gray.shape
+            total_pixels = height * width
+            
+            if total_pixels == 0:
+                return True
+            
+            # Check 1: Pixel intensity variance
+            # Empty cells have low variance (uniform color)
+            mean, std_dev = cv2.meanStdDev(gray)
+            variance = std_dev[0][0] ** 2
+            if variance > self._settings.table_empty_variance_threshold:
+                return False
+            
+            # Check 2: White pixel ratio
+            # Empty cells are mostly white/blank
+            # Consider pixels > 240 as white (out of 255)
+            white_pixels = np.sum(gray > 240)
+            white_ratio = white_pixels / total_pixels
+            if white_ratio < self._settings.table_empty_white_pixel_threshold:
+                return False
+            
+            # Check 3: Edge density
+            # Empty cells have very few edges
+            edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+            edge_pixels = np.sum(edges > 0)
+            edge_density = edge_pixels / total_pixels
+            if edge_density > self._settings.table_empty_edge_density_threshold:
+                return False
+            
+            # Check 4: Connected components count
+            # Empty cells have minimal distinct regions
+            # Use binary threshold to find components
+            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            num_labels, _ = cv2.connectedComponents(binary)
+            # Subtract 1 because background is counted as a component
+            num_components = num_labels - 1
+            if num_components > self._settings.table_empty_component_threshold:
+                return False
+            
+            # All checks passed - cell is empty
+            return True
+            
+        except Exception as e:
+            # If detection fails, assume cell is not empty (process it)
+            self._logger.debug("Empty cell detection failed, processing cell: %s", e)
+            return False
 
     def _preprocess_cell(self, cell_image: np.ndarray) -> np.ndarray:
         """Preprocess single cell before OCR.
