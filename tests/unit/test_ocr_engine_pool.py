@@ -322,7 +322,27 @@ class TestOCREnginePoolCleanup:
         )
 
         # Act
-        pool.close()
+        done = threading.Event()
+        errors = []
+
+        def close_pool():
+            try:
+                pool.close()
+            except Exception as exc:  # Capture exceptions from the thread
+                errors.append(exc)
+            finally:
+                done.set()
+
+        close_thread = threading.Thread(target=close_pool, daemon=True)
+        close_thread.start()
+
+        finished = done.wait(15)
+        if not finished:
+            raise TimeoutError("pool.close() did not finish within 15 seconds")
+
+        close_thread.join()
+        if errors:
+            raise errors[0]
 
         # Assert
         mock_engine1.close.assert_called_once()
@@ -396,6 +416,8 @@ class TestOCREnginePoolThreadSafety:
         # Assert
         assert len(errors) == 0, f"Errors occurred: {errors}"
         assert len(acquired_engines) == 5  # All workers should have acquired engines
+
+
 
 
 
