@@ -259,8 +259,31 @@ class FormExtractor:
             header.quantity_ordered = sticker_data.quantity_ordered
 
         # Extract document metadata
-        header.act_number = self._extract_act_number(header_texts)
-        header.act_date = self._extract_act_date(header_texts)
+        # Use specialized extractor for blank number and date if enabled
+        if self._settings.header_field_enable_specialized_extraction:
+            try:
+                from header_field_extractor import HeaderFieldExtractor
+
+                hfe = HeaderFieldExtractor(self._settings, self._logger)
+                blank_number, blank_date = hfe.extract_blank_number_and_date(
+                    header_texts, self._image_width, self._image_height
+                )
+
+                # Use specialized extractor results if found, otherwise fallback to old methods
+                header.act_number = blank_number or self._extract_act_number(header_texts)
+                header.act_date = blank_date or self._extract_act_date(header_texts)
+            except Exception as e:
+                self._logger.warning(
+                    "Specialized header field extraction failed, using fallback: %s", e
+                )
+                # Fallback to old methods
+                header.act_number = self._extract_act_number(header_texts)
+                header.act_date = self._extract_act_date(header_texts)
+        else:
+            # Use old extraction methods
+            header.act_number = self._extract_act_number(header_texts)
+            header.act_date = self._extract_act_date(header_texts)
+
         header.template_revision = self._extract_template_revision(header_texts)
 
         # Extract quantities

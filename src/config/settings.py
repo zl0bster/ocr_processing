@@ -97,6 +97,14 @@ class Settings(BaseSettings):
     parallel_min_regions_for_parallelization: int = 2  # Min regions to trigger parallel mode
     parallel_min_cells_for_parallelization: int = 4   # Min cells to trigger parallel mode
 
+    # === Header field extraction settings ===
+    header_field_enable_specialized_extraction: bool = True  # Enable specialized extractor for blank number/date
+    header_blank_area_x_min: float = 70.0  # Top-right region: 70-100% width
+    header_blank_area_y_max: float = 8.0   # Top region: 0-8% height
+    header_blank_min_confidence: float = 0.4  # Lower threshold for small text in cells
+    header_enable_slash_correction: bool = True  # Correct I, l, | to /
+    header_enable_digit_correction: bool = True  # Correct O→0, S→5, Z→2, etc.
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("input_dir", "output_dir", "log_dir", mode="before")
